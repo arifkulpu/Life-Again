@@ -1,0 +1,16 @@
+build/
+out/
+bin/
+obj/
+vcpkg_installed/
+.vs/
+*.dll
+*.lib
+*.exp
+*.pdb
+*.obj
+*.exe
+extern/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
