@@ -90,17 +90,14 @@ namespace LifeAgain {
 
         void AddDead(DeadFollower df) {
             std::lock_guard lock(m_mutex);
-            // Aynı FormID zaten kayıtlıysa tekrar ekleme
             for (auto& d : m_dead)
                 if (d.formID == df.formID) return;
             m_dead.push_back(std::move(df));
-            SaveToFile();
         }
 
         void Remove(RE::FormID id) {
             std::lock_guard lock(m_mutex);
             std::erase_if(m_dead, [id](const DeadFollower& d) { return d.formID == id; });
-            SaveToFile();
         }
 
         std::vector<InjuredFollower> GetInjuredFollowers() {
@@ -115,20 +112,16 @@ namespace LifeAgain {
                     i.injuryLevel = inv.injuryLevel;
                     i.bleedoutCount = inv.bleedoutCount;
                     i.lastBleedoutDay = inv.lastBleedoutDay;
-                    // injuryStartDay sadece ilk sefer yazılır
                     if (i.injuryStartDay == 0.0f) i.injuryStartDay = inv.injuryStartDay;
-                    SaveToFile();
                     return;
                 }
             }
             m_injured.push_back(std::move(inv));
-            SaveToFile();
         }
 
         void RemoveInjured(RE::FormID id) {
             std::lock_guard lock(m_mutex);
             std::erase_if(m_injured, [id](const InjuredFollower& i) { return i.formID == id; });
-            SaveToFile();
         }
 
         InjuredFollower* GetInjured(RE::FormID id) {
@@ -151,32 +144,72 @@ namespace LifeAgain {
         void AddReviveCount(RE::FormID id) {
             std::lock_guard lock(m_mutex);
             m_reviveCounts[id]++;
-            SaveToFile();
         }
 
-        void LoadFromFile() {
-            auto path = GetDataPath();
-            if (!std::filesystem::exists(path)) return;
+        void Clear() {
+            std::lock_guard lock(m_mutex);
+            m_dead.clear();
+            m_injured.clear();
+            m_reviveCounts.clear();
+            spdlog::info("FollowerTracker: Tum veriler temizlendi (Revert).");
+        }
+
+        std::string SerializeToJsonString() {
+            std::lock_guard lock(m_mutex);
+            nlohmann::json j;
+            
+            nlohmann::json deadArr = nlohmann::json::array();
+            for (auto& df : m_dead) {
+                nlohmann::json item;
+                item["formID"]    = df.formID;
+                item["name"]      = df.name;
+                item["deathDate"] = df.deathDate;
+                item["level"]     = df.level;
+                item["kind"]      = static_cast<int>(df.kind);
+                deadArr.push_back(item);
+            }
+            j["dead"] = deadArr;
+
+            nlohmann::json injuredArr = nlohmann::json::array();
+            for (auto& inf : m_injured) {
+                nlohmann::json item;
+                item["formID"] = inf.formID;
+                item["name"] = inf.name;
+                item["level"] = inf.level;
+                item["kind"] = static_cast<int>(inf.kind);
+                item["injuryLevel"] = static_cast<int>(inf.injuryLevel);
+                item["bleedoutCount"] = inf.bleedoutCount;
+                item["injuryStartDay"] = inf.injuryStartDay;
+                item["lastBleedoutDay"] = inf.lastBleedoutDay;
+                injuredArr.push_back(item);
+            }
+            j["injured"] = injuredArr;
+
+            nlohmann::json revivesObj = nlohmann::json::object();
+            for (const auto& [id, count] : m_reviveCounts) {
+                revivesObj[std::to_string(id)] = count;
+            }
+            j["reviveCounts"] = revivesObj;
+
+            return j.dump();
+        }
+
+        void DeserializeFromJsonString(const std::string& str, const SKSE::SerializationInterface* a_intfc = nullptr) {
+            if (str.empty()) return;
             try {
                 std::lock_guard lock(m_mutex);
-                std::ifstream f(path);
-                auto j = nlohmann::json::parse(f);
+                auto j = nlohmann::json::parse(str);
                 
                 m_dead.clear();
                 if (j.contains("dead")) {
                     for (auto& item : j["dead"]) {
                         DeadFollower df;
-                        df.formID    = item.value("formID", 0u);
-                        df.name      = item.value("name", std::string("Unknown"));
-                        df.deathDate = item.value("deathDate", std::string("Unknown"));
-                        df.level     = item.value("level", 1);
-                        df.kind      = static_cast<FollowerKind>(item.value("kind", 0));
-                        m_dead.push_back(df);
-                    }
-                } else if (j.is_array()) { // Legacy support
-                    for (auto& item : j) {
-                        DeadFollower df;
-                        df.formID    = item.value("formID", 0u);
+                        RE::FormID rawID = item.value("formID", 0u);
+                        RE::FormID resolvedID = rawID;
+                        if (a_intfc && rawID != 0) {
+                            a_intfc->ResolveFormID(rawID, resolvedID);
+                        }
+                        df.formID    = resolvedID;
                         df.name      = item.value("name", std::string("Unknown"));
                         df.deathDate = item.value("deathDate", std::string("Unknown"));
                         df.level     = item.value("level", 1);
@@ -189,7 +222,12 @@ namespace LifeAgain {
                 if (j.contains("injured")) {
                     for (auto& item : j["injured"]) {
                         InjuredFollower inf;
-                        inf.formID = item.value("formID", 0u);
+                        RE::FormID rawID = item.value("formID", 0u);
+                        RE::FormID resolvedID = rawID;
+                        if (a_intfc && rawID != 0) {
+                            a_intfc->ResolveFormID(rawID, resolvedID);
+                        }
+                        inf.formID = resolvedID;
                         inf.name = item.value("name", std::string("Unknown"));
                         inf.level = item.value("level", 1);
                         inf.kind = static_cast<FollowerKind>(item.value("kind", 0));
@@ -204,11 +242,17 @@ namespace LifeAgain {
                 m_reviveCounts.clear();
                 if (j.contains("reviveCounts")) {
                     for (auto& [key, value] : j["reviveCounts"].items()) {
-                        m_reviveCounts[std::stoul(key)] = value.get<int>();
+                        RE::FormID rawID = std::stoul(key);
+                        RE::FormID resolvedID = rawID;
+                        if (a_intfc && rawID != 0) {
+                            a_intfc->ResolveFormID(rawID, resolvedID);
+                        }
+                        m_reviveCounts[resolvedID] = value.get<int>();
                     }
                 }
+                spdlog::info("FollowerTracker: Save dosyasindan {} olu, {} yarali yoldas yuklendi.", m_dead.size(), m_injured.size());
             } catch (const std::exception& e) {
-                spdlog::error("FollowerTracker: JSON parse error: {}", e.what());
+                spdlog::error("FollowerTracker: JSON deserialize error: {}", e.what());
             }
         }
 
@@ -217,58 +261,6 @@ namespace LifeAgain {
         std::vector<DeadFollower> m_dead;
         std::vector<InjuredFollower> m_injured;
         std::map<RE::FormID, int> m_reviveCounts;
-
-        static std::filesystem::path GetDataPath() {
-            auto dir = SKSE::log::log_directory();
-            if (!dir) return {};
-            return dir->parent_path() / "LifeAgain" / "dead_followers.json";
-        }
-
-        void SaveToFile() {
-            auto path = GetDataPath();
-            std::filesystem::create_directories(path.parent_path());
-            try {
-                nlohmann::json j;
-                
-                nlohmann::json deadArr = nlohmann::json::array();
-                for (auto& df : m_dead) {
-                    nlohmann::json item;
-                    item["formID"]    = df.formID;
-                    item["name"]      = df.name;
-                    item["deathDate"] = df.deathDate;
-                    item["level"]     = df.level;
-                    item["kind"]      = static_cast<int>(df.kind);
-                    deadArr.push_back(item);
-                }
-                j["dead"] = deadArr;
-
-                nlohmann::json injuredArr = nlohmann::json::array();
-                for (auto& inf : m_injured) {
-                    nlohmann::json item;
-                    item["formID"] = inf.formID;
-                    item["name"] = inf.name;
-                    item["level"] = inf.level;
-                    item["kind"] = static_cast<int>(inf.kind);
-                    item["injuryLevel"] = static_cast<int>(inf.injuryLevel);
-                    item["bleedoutCount"] = inf.bleedoutCount;
-                    item["injuryStartDay"] = inf.injuryStartDay;
-                    item["lastBleedoutDay"] = inf.lastBleedoutDay;
-                    injuredArr.push_back(item);
-                }
-                j["injured"] = injuredArr;
-
-                nlohmann::json revivesObj = nlohmann::json::object();
-                for (const auto& [id, count] : m_reviveCounts) {
-                    revivesObj[std::to_string(id)] = count;
-                }
-                j["reviveCounts"] = revivesObj;
-
-                std::ofstream f(path);
-                f << j.dump(4);
-            } catch (const std::exception& e) {
-                spdlog::error("FollowerTracker: save error: {}", e.what());
-            }
-        }
     };
 
 
@@ -380,17 +372,23 @@ namespace LifeAgain {
         return FollowerKind::Human;
     }
 
-    // Aktörün yoldaş olup olmadığını kontrol et
+    // Aktörün şu an aktif olarak oyuncuyu takip edip etmediğini kontrol et
     inline bool IsFollower(RE::Actor* actor) {
         if (!actor || actor->IsPlayerRef()) return false;
 
-        // 1) CurrentFollowerFaction (formID 0x5C84D)
-        auto* followerFaction = static_cast<RE::TESFaction*>(RE::TESForm::LookupByID(0x5C84D));
-        if (followerFaction && actor->IsInFaction(followerFaction)) return true;
+        // 1) IsPlayerTeammate() kontrolü (Vanilla, NFF, EFF, AFT, Inigo, Lucien ve tüm aktif yoldaşlarda oyuncuyu takip ederken true olur)
+        if (actor->IsPlayerTeammate()) return true;
 
-        // 2) WIFollowerFaction (0x1BDA8)
-        auto* wiFaction = static_cast<RE::TESFaction*>(RE::TESForm::LookupByID(0x1BDA8));
-        if (wiFaction && actor->IsInFaction(wiFaction)) return true;
+        // 2) CurrentFollowerFaction (0x0005C84D) ve rütbe >= 0 kontrolü (sadece aktif takip ederken rütbe >= 0 olur)
+        auto* followerFaction = static_cast<RE::TESFaction*>(RE::TESForm::LookupByID(0x5C84D));
+        if (followerFaction && actor->GetFactionRank(followerFaction, false) >= 0) return true;
+
+        // 3) Köpek ve evcil hayvan takipçileri (CurrentDogFaction: 0x000DAB74 / CurrentHirelingFaction: 0x000918E2)
+        auto* dogFaction = static_cast<RE::TESFaction*>(RE::TESForm::LookupByID(0xDAB74));
+        if (dogFaction && actor->GetFactionRank(dogFaction, false) >= 0) return true;
+
+        auto* hirelingFaction = static_cast<RE::TESFaction*>(RE::TESForm::LookupByID(0x918E2));
+        if (hirelingFaction && actor->GetFactionRank(hirelingFaction, false) >= 0) return true;
 
         return false;
     }
@@ -444,7 +442,12 @@ namespace LifeAgain {
                 lower.find("julianos") != std::string::npos ||
                 lower.find("monk") != std::string::npos ||
                 lower.find("kesis") != std::string::npos ||
-                lower.find("keşiş") != std::string::npos) {
+                lower.find("keşiş") != std::string::npos ||
+                lower.find("andurs") != std::string::npos ||
+                lower.find("runil") != std::string::npos ||
+                lower.find("danica") != std::string::npos ||
+                lower.find("maramal") != std::string::npos ||
+                lower.find("erandur") != std::string::npos) {
                 spdlog::debug("LifeAgain: {} ismiyle rahip tespit edildi", name);
                 return true;
             }

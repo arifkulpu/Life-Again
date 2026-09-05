@@ -269,9 +269,9 @@ namespace LifeAgain {
 
         if (!g_PriestAccess.load()) {
             TextColored4(1.0f, 0.45f, 0.2f, 1.0f,
-                "This service is only provided by a priest in a temple. (Bu hizmet yalnizca tapinaktaki bir rahip tarafindan sunulur.)");
+                "This service is only provided by a priest or monk. (Bu hizmet yalnizca bir rahip veya kesis tarafindan sunulur.)");
             TextColored4(0.65f, 0.65f, 0.65f, 1.0f,
-                "Go to a temple and speak to a priest. (Bir tapinaga gidin ve bir rahiple konusun.)");
+                "Find a religious figure and speak to them. (Bir din adami bulun ve onunla konusun.)");
         } else {
             TextColored4(0.5f, 1.0f, 0.5f, 1.0f,
                 "%s is listening to you... (%s sizi dinliyor...)", g_PriestName.c_str(), g_PriestName.c_str());
@@ -426,9 +426,9 @@ namespace LifeAgain {
 
         if (!g_PriestAccess.load()) {
             TextColored4(1.0f, 0.45f, 0.2f, 1.0f,
-                "This service is only provided by a priest in a temple. (Bu hizmet yalnizca tapinaktaki bir rahip tarafindan sunulur.)");
+                "This service is only provided by a priest or monk. (Bu hizmet yalnizca bir rahip veya kesis tarafindan sunulur.)");
             TextColored4(0.65f, 0.65f, 0.65f, 1.0f,
-                "Go to a temple and speak to a priest. (Bir tapinaga gidin ve bir rahiple konusun.)");
+                "Find a religious figure and speak to them. (Bir din adami bulun ve onunla konusun.)");
         } else {
             TextColored4(0.5f, 1.0f, 0.5f, 1.0f,
                 "%s is listening to you... (%s sizi dinliyor...)", g_PriestName.c_str(), g_PriestName.c_str());
