@@ -4,6 +4,7 @@
 #include <shlobj_core.h>
 #include <filesystem>
 #include <string>
+#include <system_error>
 
 #include "Settings.h"
 #include "FollowerTracker.h"
@@ -14,7 +15,7 @@ using namespace std::literals;
 
 // ---- SKSE Plugin Bildirimi ----
 SKSEPluginInfo(
-    .Version              = REL::Version{1, 1, 0, 0},
+    .Version              = REL::Version{1, 2, 0, 0},
     .Name                 = "LifeAgain"sv,
     .Author               = "Arif KULPU"sv,
     .SupportEmail         = "support@example.com"sv,
@@ -23,8 +24,8 @@ SKSEPluginInfo(
     .MinimumSKSEVersion   = REL::Version{2, 0, 0, 0}
 );
 
-// Serialization kayıt türü: "LIFA" = 0x4146494C
-static constexpr std::uint32_t kRecordType    = 'AFIL';  // LifeAgain verileri
+// Serialization kayit turu: 'AFIL' (4 byte)
+static constexpr std::uint32_t kRecordType    = 'AFIL';
 static constexpr std::uint32_t kRecordVersion = 1;
 
 // ---- Kaydet (Save) ----
@@ -43,7 +44,7 @@ void OnSKSESave(SKSE::SerializationInterface* a_intfc) {
     }
 }
 
-// ---- Yükle (Load) ----
+// ---- Yukle (Load) ----
 void OnSKSELoad(SKSE::SerializationInterface* a_intfc) {
     spdlog::info("LifeAgain: Load callback tetiklendi.");
     FollowerTracker::GetSingleton().Clear();
@@ -53,7 +54,7 @@ void OnSKSELoad(SKSE::SerializationInterface* a_intfc) {
         if (type == kRecordType) {
             std::uint32_t len = 0;
             a_intfc->ReadRecordData(&len, sizeof(len));
-            if (len == 0 || len > 10 * 1024 * 1024) {  // 10MB güvenlik sınırı
+            if (len == 0 || len > 10 * 1024 * 1024) {
                 spdlog::warn("LifeAgain: Gecersiz veri uzunlugu: {}", len);
                 continue;
             }
@@ -65,23 +66,36 @@ void OnSKSELoad(SKSE::SerializationInterface* a_intfc) {
     }
 }
 
-// ---- Geri Al / Revert (Yeni oyun veya kayıt yüklenirken sıfırla) ----
+// ---- Geri Al / Revert ----
 void OnSKSERevert(SKSE::SerializationInterface* /*a_intfc*/) {
-    spdlog::info("LifeAgain: Revert callback tetiklendi - veriler temizleniyor...");
+    spdlog::info("LifeAgain: Revert callback - veriler temizleniyor...");
     FollowerTracker::GetSingleton().Clear();
 }
 
 void InitializeLogging() {
-    std::filesystem::path logPath = "C:\\Users\\pc\\Desktop\\LifeAgain.log";
+    // SKSE standart log dizini: Documents\My Games\Skyrim Special Edition\SKSE
+    std::filesystem::path logDir;
+    PWSTR docPath = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DEFAULT, nullptr, &docPath))) {
+        logDir = std::filesystem::path(docPath) / "My Games" / "Skyrim Special Edition" / "SKSE";
+        CoTaskMemFree(docPath);
+    } else {
+        logDir = std::filesystem::current_path();
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(logDir, ec);
+    const std::string logPath = (logDir / "LifeAgain.log").string();
 
     try {
-        auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logPath.string(), true);
-        auto log  = std::make_shared<spdlog::logger>("LifeAgain", std::move(sink));
+        auto sink = std::shared_ptr<spdlog::sinks::basic_file_sink_mt>(
+            new spdlog::sinks::basic_file_sink_mt(logPath, true));
+        auto log = std::make_shared<spdlog::logger>("LifeAgain", sink);
         log->set_level(spdlog::level::debug);
         log->flush_on(spdlog::level::debug);
         spdlog::set_default_logger(std::move(log));
         spdlog::set_pattern("[%H:%M:%S] [%l] %v");
-        spdlog::info("LifeAgain: Log baslatildi. Yol: {}", logPath.string());
+        spdlog::info("LifeAgain: Log baslatildi. Yol: {}", logPath);
     } catch (const std::exception& e) {
         (void)e;
     }
@@ -103,18 +117,31 @@ void OnSKSEMessage(SKSE::MessagingInterface::Message* msg) {
             RegisterDeathEventSink();
             break;
 
+        case SKSE::MessagingInterface::kNewGame:
+            // Yeni oyun baslatildi - verileri tamamen sifirla
+            spdlog::info("LifeAgain: kNewGame - Takipci verileri sifirlanıyor...");
+            FollowerTracker::GetSingleton().Clear();
+            break;
+
+        case SKSE::MessagingInterface::kPreLoadGame:
+            // Kayit dosyasi yuklenmeden once bellegi temizle
+            // (SKSE Revert+Load callback da bunu yapiyor, bu ek güvence)
+            spdlog::info("LifeAgain: kPreLoadGame - Eski veriler temizleniyor...");
+            FollowerTracker::GetSingleton().Clear();
+            break;
+
         default:
             break;
     }
 }
 
-// ---- Ana Giriş Noktası ----
+// ---- Ana Giris Noktasi ----
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SKSE::Init(skse);
     InitializeLogging();
-    spdlog::info("LifeAgain v1.1 yuklendi.");
+    spdlog::info("LifeAgain v1.2 yuklendi.");
 
-    // Ayarları dosyadan yükle
+    // Ayarlari dosyadan yukle
     LoadSettings();
     spdlog::info("LifeAgain: GoldMultiplier = {}", g_Settings.GoldMultiplier);
 
@@ -125,7 +152,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
         return false;
     }
 
-    // SKSE serileştirme sistemi — her save dosyasına ayrı veri
+    // SKSE serillestirme sistemi - her save dosyasina ayri veri
     auto* serialization = SKSE::GetSerializationInterface();
     if (!serialization) {
         spdlog::error("LifeAgain: SerializationInterface alinamadi!");
