@@ -29,6 +29,9 @@
 #include <RE/B/BGSKeyword.h>
 #include <RE/I/InventoryChanges.h>
 #include <RE/A/AlchemyItem.h>
+#include <RE/T/TESDataHandler.h>
+#include <RE/A/ActorEquipManager.h>
+#include <RE/T/TESObjectARMO.h>
 
 namespace LifeAgain {
 
@@ -266,14 +269,51 @@ namespace LifeAgain {
 
     // ---- Yardımcı fonksiyonlar ----
 
+    // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
+    // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
+    // "Usable Skyrim Bandages.esp" yukluyse kafa bandajini giydirir/cikarir.
+    // Mod yuklu degilse hicbir islem yapilmaz.
+    // ESL plugin - yerel FormID 0x800 (ClothesHeadBandages)
+    static constexpr std::uint32_t kBandageLocalFormID = 0x800;
+    static constexpr const char*   kBandagePlugin      = "Usable Skyrim Bandages.esp";
+
+    inline RE::TESObjectARMO* GetBandageItem() {
+        auto* handler = RE::TESDataHandler::GetSingleton();
+        if (!handler) return nullptr;
+        if (!handler->LookupModByName(kBandagePlugin)) return nullptr;
+        return handler->LookupForm<RE::TESObjectARMO>(kBandageLocalFormID, kBandagePlugin);
+    }
+
+    inline void EquipBandage(RE::Actor* actor) {
+        if (!actor) return;
+        auto* bandage = GetBandageItem();
+        if (!bandage) return;
+
+        // Moda ait bandaji envantere ekle ve giydir (Circlet/Kafa slotu)
+        actor->AddObjectToContainer(bandage, nullptr, 1, nullptr);
+        RE::ActorEquipManager::GetSingleton()->EquipObject(actor, bandage, nullptr, 1);
+        spdlog::info("LifeAgain: {} kafa bandaji takildi ({}).", actor->GetDisplayFullName(), kBandagePlugin);
+    }
+
+    inline void UnequipBandage(RE::Actor* actor) {
+        if (!actor) return;
+        auto* bandage = GetBandageItem();
+        if (!bandage) return;
+
+        // Bandaji cikar ve envanterden sil
+        RE::ActorEquipManager::GetSingleton()->UnequipObject(actor, bandage, nullptr, 1);
+        actor->RemoveItem(bandage, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+        spdlog::info("LifeAgain: {} kafa bandaji cikarildi ({}).", actor->GetDisplayFullName(), kBandagePlugin);
+    }
+
     inline void RemoveInjuryDebuffs(RE::Actor* actor, InjuryLevel level) {
         if (!actor || level == InjuryLevel::None) return;
         auto owner = actor->AsActorValueOwner();
         if (owner) {
             float damageMod = (level == InjuryLevel::Heavy) ? 0.50f : 0.15f;
             float speedMod  = (level == InjuryLevel::Heavy) ? 50.0f : 20.0f;
-            float regenMod  = (level == InjuryLevel::Heavy) ? 75.0f : 25.0f; // Magicka, Stamina, Health regen
-            float armorMod  = (level == InjuryLevel::Heavy) ? 150.0f : 50.0f; // Armor rating
+            float regenMod  = (level == InjuryLevel::Heavy) ? 75.0f : 25.0f;
+            float armorMod  = (level == InjuryLevel::Heavy) ? 150.0f : 50.0f;
 
             owner->ModActorValue(RE::ActorValue::kAttackDamageMult, damageMod);
             owner->ModActorValue(RE::ActorValue::kSpeedMult, speedMod);
@@ -282,8 +322,12 @@ namespace LifeAgain {
             owner->ModActorValue(RE::ActorValue::kStaminaRateMult, regenMod);
             owner->ModActorValue(RE::ActorValue::kDamageResist, armorMod);
         }
+
+        // Bandaji cikar (mod yukluyse)
+        UnequipBandage(actor);
         spdlog::info("LifeAgain: Injury debuffs removed from {}", actor->GetDisplayFullName());
     }
+
 
     inline void ApplyInjuryDebuffs(RE::Actor* actor, InjuryLevel oldLevel, InjuryLevel newLevel) {
         if (!actor) return;
@@ -310,6 +354,9 @@ namespace LifeAgain {
             }
             spdlog::info("LifeAgain: {} is now injured (Level: {}). SpeedMod & DamageMod applied.", actor->GetDisplayFullName(), (int)newLevel);
             
+            // Bandaj tak (mod yukluyse)
+            EquipBandage(actor);
+
             // Inleme sesi caldir ve animasyon yolla
             auto* base = actor->GetActorBase();
             bool isFemale = base && (base->GetSex() == 1);
