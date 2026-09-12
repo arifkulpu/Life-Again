@@ -34,6 +34,17 @@
 
 ## 🚀 Changelog / Güncellemeler
 
+### Version 1.2
+**EN:**
+- **Visual Head Bandages (Soft Dependency):** Added automatic equipping of head bandages on injured followers if the mod `Usable Skyrim Bandages.esp` is installed. When healed (via potion, temple, or natural recovery), the bandage is automatically removed. If the mod is not present, the game continues normally without issues.
+- **Strict Active Follower Detection:** Refined follower recognition to track only active party members currently traveling with the player. Non-team NPCs, hostile characters, and NPCs outside your active party/cell are no longer mistakenly registered.
+- **Save Game Bandage Persistence:** Automatically re-equips bandages for followers who were already injured when loading an existing save game (`kPostLoadGame`).
+
+**TR:**
+- **Görsel Kafa Bandajı Entegrasyonu (Yumuşak Bağımlılık):** `Usable Skyrim Bandages.esp` modu yüklüyse, yaralanan yoldaşlara otomatik olarak kafa bandajı verilir ve giydirilir. Yoldaş iyileştiğinde (iksir, tapınak veya doğal yolla) bandaj otomatik olarak çıkarılır. Mod yüklü değilse sistem sorunsuz şekilde standart işleyişine devam eder.
+- **Sıkı Aktif Takipçi Filtrelemesi:** Takipçi algılama mekanizması güçlendirildi. Yalnızca oyuncuyla fiilen birlikte gezen aktif yoldaşlar takip edilir. Takımda olmayan yabancı NPC'ler, düşmanlar veya oyuncuyla aynı hücrede bulunmayanlar artık yanlışlıkla kaydedilmez.
+- **Kayıt Dosyası (Save) Bandaj Desteği:** Halihazırda yaralı olan yoldaşların bulunduğu bir kayıt dosyası yüklendiğinde, kafa bandajları otomatik olarak yeniden giydirilir (`kPostLoadGame`).
+
 ### Version 1.1
 **EN:**
 - **Crash Fix:** Fixed critical random crashes on follower death by delegating events to the SKSE task interface instead of executing directly inside the event sink.
@@ -91,11 +102,13 @@ When a follower is downed in battle and survives, they have a 15% chance (config
   - Female followers: female groan sound
 - A notification appears in the top-left: *"[Name] is lightly injured, you should heal them."*
 - Optionally, a pop-up message box can appear that you must close manually.
+- **Visual Bandage:** If *Usable Skyrim Bandages* is installed, a head bandage is automatically equipped on the follower.
 
 #### Heavy Injury (Ağır Yaralanma)
 - If a **Lightly Injured** follower is downed **3 more times** without being healed, they become **Heavily Injured**.
 - Follower receives a **-50% penalty** to attack damage, health/magicka/stamina regeneration, and **-150 armor rating**.
 - A notification appears: *"[Name] is heavily injured, heal them immediately!"*
+- **Visual Bandage:** Bandage remains visibly equipped until the follower is fully cured.
 
 **TR:**  
 Bir yoldaş savaşta yere düşüp hayatta kaldığında, %15 ihtimalle (ayarlanabilir) **Hafif Yaralı** durumuna girer. Yaralanmaların iki seviyesi vardır:
@@ -107,11 +120,13 @@ Bir yoldaş savaşta yere düşüp hayatta kaldığında, %15 ihtimalle (ayarlan
   - Kadın yoldaşlar: kadın inleme sesi
 - Sol üstte bildirim çıkar: *"[Ad] hafif yaralandı, tedavi ettirsen iyi olur."*
 - İsteğe bağlı olarak, elle kapatılması gereken bir mesaj kutusu da açılabilir.
+- **Görsel Bandaj:** *Usable Skyrim Bandages* modu yüklüyse yoldaşa otomatik kafa bandajı takılır.
 
 #### Ağır Yaralanma (Heavy Injury)
 - **Hafif Yaralı** bir yoldaş, iyileştirilmeden **3 kez daha** yere düşerse **Ağır Yaralı** olur.
 - Yoldaş, saldırı hasarı, can/büyü/dayanıklılık yenilenmesinde **%50 ceza** alır ve **zırhı 150 puan düşer**.
 - Bildirim çıkar: *"[Ad] ağır yaralandı, acilen tedavi ettir!"*
+- **Görsel Bandaj:** Yoldaş tamamen tedavi edilene kadar kafa bandajı üzerinde kalmaya devam eder.
 
 ---
 
