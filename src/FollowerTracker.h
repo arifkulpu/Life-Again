@@ -272,27 +272,82 @@ namespace LifeAgain {
     // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
     // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
     // "Usable Skyrim Bandages.esp" yukluyse kafa bandajini giydirir/cikarir.
+    // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
+    // "Usable Skyrim Bandages.esp" yukluyse kafa bandajini giydirir/cikarir.
     // Mod yuklu degilse hicbir islem yapilmaz.
-    // ESL plugin - yerel FormID 0x800 (ClothesHeadBandages)
     static constexpr std::uint32_t kBandageLocalFormID = 0x800;
     static constexpr const char*   kBandagePlugin      = "Usable Skyrim Bandages.esp";
 
     inline RE::TESObjectARMO* GetBandageItem() {
         auto* handler = RE::TESDataHandler::GetSingleton();
         if (!handler) return nullptr;
-        if (!handler->LookupModByName(kBandagePlugin)) return nullptr;
-        return handler->LookupForm<RE::TESObjectARMO>(kBandageLocalFormID, kBandagePlugin);
+
+        // Modu yuklu modlar listesinde ara (buyuk/kucuk harf duyarsiz karsilastirma)
+        const RE::TESFile* file = nullptr;
+        const auto* const* files = handler->GetLoadedMods();
+        std::uint8_t count = handler->GetLoadedModCount();
+        if (files) {
+            for (std::uint8_t i = 0; i < count; ++i) {
+                if (files[i] && files[i]->fileName) {
+                    if (_stricmp(files[i]->fileName, kBandagePlugin) == 0) {
+                        file = files[i];
+                        break;
+                    }
+                }
+            }
+        }
+        if (!file) {
+            const auto* const* smallFiles = handler->GetLoadedLightMods();
+            std::uint8_t smallCount = handler->GetLoadedLightModCount();
+            if (smallFiles) {
+                for (std::uint8_t i = 0; i < smallCount; ++i) {
+                    if (smallFiles[i] && smallFiles[i]->fileName) {
+                        if (_stricmp(smallFiles[i]->fileName, kBandagePlugin) == 0) {
+                            file = smallFiles[i];
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!file) return nullptr;
+
+        // ESL veya normal plugin tam FormID hesapla
+        RE::FormID fullFormID = 0;
+        if (file->compileIndex == 0xFE) {
+            fullFormID = (0xFE000000) | (static_cast<RE::FormID>(file->smallFileCompileIndex) << 12) | (kBandageLocalFormID & 0xFFF);
+        } else {
+            fullFormID = (static_cast<RE::FormID>(file->compileIndex) << 24) | (kBandageLocalFormID & 0xFFFFFF);
+        }
+
+        auto* form = RE::TESForm::LookupByID(fullFormID);
+        if (!form) {
+            // Yedek: LookupForm ile dene
+            form = handler->LookupForm(kBandageLocalFormID, file->fileName);
+        }
+
+        if (form && form->GetFormType() == RE::FormType::Armor) {
+            return static_cast<RE::TESObjectARMO*>(form);
+        }
+        return nullptr;
     }
 
     inline void EquipBandage(RE::Actor* actor) {
         if (!actor) return;
         auto* bandage = GetBandageItem();
-        if (!bandage) return;
+        if (!bandage) {
+            spdlog::warn("LifeAgain: Bandage formu bulunamadi (Usable Skyrim Bandages yuklu degil veya FormID bulunamadi).");
+            return;
+        }
 
-        // Moda ait bandaji envantere ekle ve giydir (Circlet/Kafa slotu)
+        // Moda ait bandaji envantere ekle ve zorla giydir
         actor->AddObjectToContainer(bandage, nullptr, 1, nullptr);
-        RE::ActorEquipManager::GetSingleton()->EquipObject(actor, bandage, nullptr, 1);
-        spdlog::info("LifeAgain: {} kafa bandaji takildi ({}).", actor->GetDisplayFullName(), kBandagePlugin);
+        if (auto* em = RE::ActorEquipManager::GetSingleton()) {
+            em->EquipObject(actor, bandage, nullptr, 1, nullptr, true, true, false, true);
+        }
+        actor->Update3DModel();
+        spdlog::info("LifeAgain: {} kafa bandaji basariyla takildi.", actor->GetDisplayFullName());
     }
 
     inline void UnequipBandage(RE::Actor* actor) {
@@ -301,9 +356,12 @@ namespace LifeAgain {
         if (!bandage) return;
 
         // Bandaji cikar ve envanterden sil
-        RE::ActorEquipManager::GetSingleton()->UnequipObject(actor, bandage, nullptr, 1);
+        if (auto* em = RE::ActorEquipManager::GetSingleton()) {
+            em->UnequipObject(actor, bandage, nullptr, 1, nullptr, true, true, false, true);
+        }
         actor->RemoveItem(bandage, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-        spdlog::info("LifeAgain: {} kafa bandaji cikarildi ({}).", actor->GetDisplayFullName(), kBandagePlugin);
+        actor->Update3DModel();
+        spdlog::info("LifeAgain: {} kafa bandaji cikarildi.", actor->GetDisplayFullName());
     }
 
     inline void RemoveInjuryDebuffs(RE::Actor* actor, InjuryLevel level) {
@@ -423,19 +481,45 @@ namespace LifeAgain {
     inline bool IsFollower(RE::Actor* actor) {
         if (!actor || actor->IsPlayerRef()) return false;
 
-        // 1) IsPlayerTeammate() kontrolü (Vanilla, NFF, EFF, AFT, Inigo, Lucien ve tüm aktif yoldaşlarda oyuncuyu takip ederken true olur)
-        if (actor->IsPlayerTeammate()) return true;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return false;
 
-        // 2) CurrentFollowerFaction (0x0005C84D) ve rütbe >= 0 kontrolü (sadece aktif takip ederken rütbe >= 0 olur)
+        // Oyuncuya dusmansa asla yoldas degildir
+        if (actor->IsHostileToActor(player)) return false;
+
+        // 1) En kesin tespit: IsPlayerTeammate() kontrolü
+        // (Vanilla yoldaslar, NFF, AFT, EFF, Inigo, Lucien aktif takipteyken kesinlikle true olur)
+        if (actor->IsPlayerTeammate()) {
+            return true;
+        }
+
+        // 2) Vanilla CurrentFollowerFaction (0x0005C84D) kontrolü
+        // Sadece bu faction'a gercekten dahilse ve rutbesi >= 0 ise
         auto* followerFaction = static_cast<RE::TESFaction*>(RE::TESForm::LookupByID(0x5C84D));
-        if (followerFaction && actor->GetFactionRank(followerFaction, false) >= 0) return true;
+        if (followerFaction && actor->IsInFaction(followerFaction)) {
+            if (actor->GetFactionRank(followerFaction, false) >= 0) {
+                // Ekstra dogrulama: Oyuncu ile ayni hucrede veya makul mesafede mi?
+                if (actor->GetParentCell() == player->GetParentCell()) {
+                    return true;
+                }
+            }
+        }
 
-        // 3) Köpek ve evcil hayvan takipçileri (CurrentDogFaction: 0x000DAB74 / CurrentHirelingFaction: 0x000918E2)
+        // 3) Kopek ve evcil hayvan takipcileri (CurrentDogFaction: 0x000DAB74)
         auto* dogFaction = static_cast<RE::TESFaction*>(RE::TESForm::LookupByID(0xDAB74));
-        if (dogFaction && actor->GetFactionRank(dogFaction, false) >= 0) return true;
+        if (dogFaction && actor->IsInFaction(dogFaction)) {
+            if (actor->GetFactionRank(dogFaction, false) >= 0) {
+                return true;
+            }
+        }
 
+        // 4) Parali Asker Takipcileri (CurrentHirelingFaction: 0x000918E2)
         auto* hirelingFaction = static_cast<RE::TESFaction*>(RE::TESForm::LookupByID(0x918E2));
-        if (hirelingFaction && actor->GetFactionRank(hirelingFaction, false) >= 0) return true;
+        if (hirelingFaction && actor->IsInFaction(hirelingFaction)) {
+            if (actor->GetFactionRank(hirelingFaction, false) >= 0) {
+                return true;
+            }
+        }
 
         return false;
     }
