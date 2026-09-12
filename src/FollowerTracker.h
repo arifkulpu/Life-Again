@@ -270,9 +270,6 @@ namespace LifeAgain {
     // ---- Yardımcı fonksiyonlar ----
 
     // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
-    // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
-    // "Usable Skyrim Bandages.esp" yukluyse kafa bandajini giydirir/cikarir.
-    // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
     // "Usable Skyrim Bandages.esp" yukluyse kafa bandajini giydirir/cikarir.
     // Mod yuklu degilse hicbir islem yapilmaz.
     static constexpr std::uint32_t kBandageLocalFormID = 0x800;
@@ -280,56 +277,40 @@ namespace LifeAgain {
 
     inline RE::TESObjectARMO* GetBandageItem() {
         auto* handler = RE::TESDataHandler::GetSingleton();
-        if (!handler) return nullptr;
+        if (!handler) {
+            spdlog::warn("LifeAgain: GetBandageItem - TESDataHandler null!");
+            return nullptr;
+        }
 
-        // Modu yuklu modlar listesinde ara (buyuk/kucuk harf duyarsiz karsilastirma)
-        const RE::TESFile* file = nullptr;
+        // En temiz yol: LookupForm<T> cagrisini kullan.
+        // Bu fonksiyon hem ESL hem normal modlari otomatik olarak handle eder.
+        auto* armor = handler->LookupForm<RE::TESObjectARMO>(kBandageLocalFormID, kBandagePlugin);
+        if (armor) {
+            spdlog::info("LifeAgain: Bandage formu bulundu. FormID={:08X} Name={}", armor->GetFormID(), armor->GetFullName());
+            return armor;
+        }
+
+        // Bulunamazsa tum yuklu modlari logla (debug icin)
+        spdlog::warn("LifeAgain: LookupForm ile bandage bulunamadi. Yuklu modlar taranıyor...");
         const auto* const* files = handler->GetLoadedMods();
         std::uint8_t count = handler->GetLoadedModCount();
         if (files) {
             for (std::uint8_t i = 0; i < count; ++i) {
-                if (files[i] && files[i]->fileName) {
-                    if (_stricmp(files[i]->fileName, kBandagePlugin) == 0) {
-                        file = files[i];
-                        break;
-                    }
+                if (files[i]) {
+                    spdlog::info("LifeAgain: [RegMod] idx={} name={}", i, files[i]->GetFilename());
                 }
             }
         }
-        if (!file) {
-            const auto* const* smallFiles = handler->GetLoadedLightMods();
-            std::uint8_t smallCount = handler->GetLoadedLightModCount();
-            if (smallFiles) {
-                for (std::uint8_t i = 0; i < smallCount; ++i) {
-                    if (smallFiles[i] && smallFiles[i]->fileName) {
-                        if (_stricmp(smallFiles[i]->fileName, kBandagePlugin) == 0) {
-                            file = smallFiles[i];
-                            break;
-                        }
-                    }
+        const auto* const* smallFiles = handler->GetLoadedLightMods();
+        std::uint8_t smallCount = handler->GetLoadedLightModCount();
+        if (smallFiles) {
+            for (std::uint8_t i = 0; i < smallCount; ++i) {
+                if (smallFiles[i]) {
+                    spdlog::info("LifeAgain: [ESLMod] idx={} name={}", i, smallFiles[i]->GetFilename());
                 }
             }
         }
 
-        if (!file) return nullptr;
-
-        // ESL veya normal plugin tam FormID hesapla
-        RE::FormID fullFormID = 0;
-        if (file->compileIndex == 0xFE) {
-            fullFormID = (0xFE000000) | (static_cast<RE::FormID>(file->smallFileCompileIndex) << 12) | (kBandageLocalFormID & 0xFFF);
-        } else {
-            fullFormID = (static_cast<RE::FormID>(file->compileIndex) << 24) | (kBandageLocalFormID & 0xFFFFFF);
-        }
-
-        auto* form = RE::TESForm::LookupByID(fullFormID);
-        if (!form) {
-            // Yedek: LookupForm ile dene
-            form = handler->LookupForm(kBandageLocalFormID, file->fileName);
-        }
-
-        if (form && form->GetFormType() == RE::FormType::Armor) {
-            return static_cast<RE::TESObjectARMO*>(form);
-        }
         return nullptr;
     }
 
