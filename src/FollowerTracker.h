@@ -272,7 +272,7 @@ namespace LifeAgain {
     // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
     // "Usable Skyrim Bandages.esp" yukluyse kafa bandajini giydirir/cikarir.
     // Mod yuklu degilse hicbir islem yapilmaz.
-    static constexpr std::uint32_t kBandageLocalFormID = 0x800;
+    static constexpr std::uint32_t kBandageLocalFormID = 0x805; // RxHeadBandagesL (Head bandages - Left)
     static constexpr const char*   kBandagePlugin      = "Usable Skyrim Bandages.esp";
 
     inline RE::TESObjectARMO* GetBandageItem() {
@@ -282,35 +282,38 @@ namespace LifeAgain {
             return nullptr;
         }
 
-        // En temiz yol: LookupForm<T> cagrisini kullan.
-        // Bu fonksiyon hem ESL hem normal modlari otomatik olarak handle eder.
+        // 1. Yol: LookupForm<T> ile doğrudan çek (ESL/Normal otomatik)
         auto* armor = handler->LookupForm<RE::TESObjectARMO>(kBandageLocalFormID, kBandagePlugin);
         if (armor) {
             spdlog::info("LifeAgain: Bandage formu bulundu. FormID={:08X} Name={}", armor->GetFormID(), armor->GetFullName());
             return armor;
         }
 
-        // Bulunamazsa tum yuklu modlari logla (debug icin)
-        spdlog::warn("LifeAgain: LookupForm ile bandage bulunamadi. Yuklu modlar taranıyor...");
-        const auto* const* files = handler->GetLoadedMods();
-        std::uint8_t count = handler->GetLoadedModCount();
-        if (files) {
-            for (std::uint8_t i = 0; i < count; ++i) {
-                if (files[i]) {
-                    spdlog::info("LifeAgain: [RegMod] idx={} name={}", i, files[i]->GetFilename());
-                }
-            }
+        // 2. Yol: ESL olarak plugin arayıp tam FormID hesapla (FE xxx 805)
+        const RE::TESFile* file = handler->LookupLoadedLightModByName(kBandagePlugin);
+        if (!file) {
+            file = handler->LookupLoadedModByName(kBandagePlugin);
         }
-        const auto* const* smallFiles = handler->GetLoadedLightMods();
-        std::uint8_t smallCount = handler->GetLoadedLightModCount();
-        if (smallFiles) {
-            for (std::uint8_t i = 0; i < smallCount; ++i) {
-                if (smallFiles[i]) {
-                    spdlog::info("LifeAgain: [ESLMod] idx={} name={}", i, smallFiles[i]->GetFilename());
-                }
+        if (!file) {
+            file = handler->LookupModByName(kBandagePlugin);
+        }
+
+        if (file) {
+            RE::FormID fullFormID = 0;
+            if (file->compileIndex == 0xFE || file->IsLight()) {
+                fullFormID = 0xFE000000 | (static_cast<RE::FormID>(file->smallFileCompileIndex) << 12) | (kBandageLocalFormID & 0xFFF);
+            } else {
+                fullFormID = (static_cast<RE::FormID>(file->compileIndex) << 24) | (kBandageLocalFormID & 0xFFFFFF);
+            }
+
+            auto* form = RE::TESForm::LookupByID<RE::TESObjectARMO>(fullFormID);
+            if (form) {
+                spdlog::info("LifeAgain: Bandage formu TESFile uzerinden bulundu. FormID={:08X} Name={}", form->GetFormID(), form->GetFullName());
+                return form;
             }
         }
 
+        spdlog::warn("LifeAgain: Usable Skyrim Bandages veya Bandage formu bulunamadi (FormID: 0x{:X}).", kBandageLocalFormID);
         return nullptr;
     }
 
