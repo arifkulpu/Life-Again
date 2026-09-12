@@ -423,6 +423,27 @@ namespace LifeAgain {
         }
     }
 
+    // Save yuklendikten sonra, zaten yarali olan takipcilere bandaj yeniden tak
+    inline void ReEquipBandagesOnLoad() {
+        auto* tracker = &FollowerTracker::GetSingleton();
+        auto injured = tracker->GetInjuredFollowers();  // kopya al
+        if (injured.empty()) {
+            spdlog::info("LifeAgain: ReEquipBandagesOnLoad - yarali takipci yok.");
+            return;
+        }
+        spdlog::info("LifeAgain: ReEquipBandagesOnLoad - {} yarali takipci icin bandaj takiliyor.", injured.size());
+        for (auto& inf : injured) {
+            auto* form = RE::TESForm::LookupByID(inf.formID);
+            if (!form) continue;
+            auto* actor = form->As<RE::Actor>();
+            if (!actor || actor->IsDead()) continue;
+            spdlog::info("LifeAgain: {} icin bandaj yeniden takiliyor.", actor->GetDisplayFullName());
+            EquipBandage(actor);
+        }
+    }
+
+
+
     // Oyun içi zamanı string'e çevirir
     inline std::string GetCurrentGameTimeString() {
         auto* calendar = RE::Calendar::GetSingleton();
@@ -812,7 +833,9 @@ namespace LifeAgain {
                             if (capturedOld != capturedNew) {
                                 ApplyInjuryDebuffs(a, capturedOld, capturedNew);
                             } else {
-                                // Sadece inleme sesi
+                                // Ayni seviyede kalsa bile bandaj takilmamis olabilir (eski save)
+                                EquipBandage(a);
+                                // Inleme sesi
                                 if (isFemale) {
                                     RE::PlaySound("NPCHumanFemaleGroan");
                                 } else {

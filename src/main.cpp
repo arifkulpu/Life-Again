@@ -130,6 +130,16 @@ void OnSKSEMessage(SKSE::MessagingInterface::Message* msg) {
             FollowerTracker::GetSingleton().Clear();
             break;
 
+        case SKSE::MessagingInterface::kPostLoadGame:
+            // Save yuklendikten sonra: yarali takipcilere bandaj yeniden tak
+            spdlog::info("LifeAgain: kPostLoadGame - Yarali takipcilere bandaj yeniden takiliyor...");
+            if (auto* taskInterface = SKSE::GetTaskInterface()) {
+                taskInterface->AddTask([]() {
+                    ReEquipBandagesOnLoad();
+                });
+            }
+            break;
+
         default:
             break;
     }
