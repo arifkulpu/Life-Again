@@ -325,14 +325,21 @@ namespace LifeAgain {
             return;
         }
 
-        // Moda ait bandaji envantere ekle ve zorla giydir
-        actor->AddObjectToContainer(bandage, nullptr, 1, nullptr);
+        // Envanterinde zaten var mi kontrol et — varsa tekrar ekleme, sadece giydir
+        auto inv = actor->GetInventory([bandage](RE::TESBoundObject& obj) {
+            return &obj == static_cast<RE::TESBoundObject*>(bandage);
+        });
+        bool alreadyInInventory = !inv.empty();
+        if (!alreadyInInventory) {
+            actor->AddObjectToContainer(bandage, nullptr, 1, nullptr);
+        }
         if (auto* em = RE::ActorEquipManager::GetSingleton()) {
             em->EquipObject(actor, bandage, nullptr, 1, nullptr, true, true, false, true);
         }
         actor->Update3DModel();
         spdlog::info("LifeAgain: {} kafa bandaji basariyla takildi.", actor->GetDisplayFullName());
     }
+
 
     inline void UnequipBandage(RE::Actor* actor) {
         if (!actor) return;

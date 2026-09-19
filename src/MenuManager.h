@@ -90,10 +90,24 @@ namespace LifeAgain {
         if (player) {
             actor->MoveTo(player->AsReference());
         }
-        
+
+        // Dirilen yoldasta kalabilecek debuff kalintilari temizle.
+        // KillImmediate + Resurrect sonrasi ModActorValue degerleri bazen geri gelmez,
+        // guvenli olarak her iki seviye icin de ters duzeltme uygula.
+        auto* tracker = &FollowerTracker::GetSingleton();
+        InjuredFollower* inf = tracker->GetInjured(formID);
+        if (inf) {
+            RemoveInjuryDebuffs(actor, inf->injuryLevel);
+            tracker->RemoveInjured(formID);
+        }
+        // Yasli save'lerden gelebilecek kalici debufflara karsi ek temizlik
+        // (iki seviye icin birden uygularsak fazladan pozitif mod gelebilir, bu daha az zararli)
+        // Bu yuzden yalnizca tracker'da kayitliysa yukarida temizliyoruz.
+
         FollowerTracker::GetSingleton().AddReviveCount(formID);
         spdlog::info("LifeAgain: {} hayata donduruldu", actor->GetDisplayFullName());
     }
+
 
     inline const char* KindLabel(FollowerKind k) {
         switch (k) {
@@ -534,6 +548,10 @@ namespace LifeAgain {
                                     tracker->RemoveInjured(fid);
                                 }
                             });
+                            // Sekme ve secim durumunu hemen sifirla, asenkron temizlik bittikten sonra
+                            // bir sonraki frame'de RefreshList otomatik cagrilacak
+                            state.selectedInjuredIndex = -1;
+                            state.confirmHealVisible = false;
                             RefreshList();
                         }
                         SameLine();
