@@ -359,10 +359,12 @@ namespace LifeAgain {
         if (!actor || level == InjuryLevel::None) return;
         auto owner = actor->AsActorValueOwner();
         if (owner) {
-            float damageMod = (level == InjuryLevel::Heavy) ? 0.50f : 0.15f;
-            float speedMod  = (level == InjuryLevel::Heavy) ? 50.0f : 20.0f;
-            float regenMod  = (level == InjuryLevel::Heavy) ? 75.0f : 25.0f;
-            float armorMod  = (level == InjuryLevel::Heavy) ? 150.0f : 50.0f;
+            // Remove değerleri Apply ile birebir eslesmelidir
+            // Light: speed +10, Heavy: speed +20
+            float damageMod = (level == InjuryLevel::Heavy) ? 0.25f : 0.10f;
+            float speedMod  = (level == InjuryLevel::Heavy) ? 20.0f : 10.0f;
+            float regenMod  = (level == InjuryLevel::Heavy) ? 25.0f : 15.0f;
+            float armorMod  = (level == InjuryLevel::Heavy) ? 60.0f : 30.0f;
 
             owner->ModActorValue(RE::ActorValue::kAttackDamageMult, damageMod);
             owner->ModActorValue(RE::ActorValue::kSpeedMult, speedMod);
@@ -386,13 +388,15 @@ namespace LifeAgain {
         }
         
         // Yenisini uygula
+        // SpeedMult taban degeri 100'dur. -10 = 90% hiz (hafif topallama), -20 = 80% hiz (belirgin topallama)
+        // Eski -50 degeri NPC'yi neredeyse tamamen durduruyordu (50 hiz = hareket edemez).
         if (newLevel != InjuryLevel::None) {
             auto owner = actor->AsActorValueOwner();
             if (owner) {
-                float damageMod = (newLevel == InjuryLevel::Heavy) ? -0.50f : -0.15f;
-                float speedMod  = (newLevel == InjuryLevel::Heavy) ? -50.0f : -20.0f;
-                float regenMod  = (newLevel == InjuryLevel::Heavy) ? -75.0f : -25.0f; // Magicka, Stamina, Health regen
-                float armorMod  = (newLevel == InjuryLevel::Heavy) ? -150.0f : -50.0f; // Armor rating
+                float damageMod = (newLevel == InjuryLevel::Heavy) ? -0.25f : -0.10f;
+                float speedMod  = (newLevel == InjuryLevel::Heavy) ? -20.0f : -10.0f;
+                float regenMod  = (newLevel == InjuryLevel::Heavy) ? -25.0f : -15.0f;
+                float armorMod  = (newLevel == InjuryLevel::Heavy) ? -60.0f : -30.0f;
 
                 owner->ModActorValue(RE::ActorValue::kAttackDamageMult, damageMod);
                 owner->ModActorValue(RE::ActorValue::kSpeedMult, speedMod);
@@ -662,6 +666,14 @@ namespace LifeAgain {
             auto deadList = FollowerTracker::GetSingleton().GetDeadFollowers();
             for (const auto& d : deadList) {
                 if (d.formID == df.formID) return RE::BSEventNotifyControl::kContinue;
+            }
+
+            // Eğer yaralı listesindeyse temizle (artık öldü, dashboard'da yaralı gözükmemeli)
+            auto* tracker = &FollowerTracker::GetSingleton();
+            InjuredFollower* inf = tracker->GetInjured(df.formID);
+            if (inf) {
+                RemoveInjuryDebuffs(actor, inf->injuryLevel);
+                tracker->RemoveInjured(df.formID);
             }
 
             spdlog::info("LifeAgain: Follower died -> {} (Level {}) at {}", df.name, df.level, df.deathDate);
