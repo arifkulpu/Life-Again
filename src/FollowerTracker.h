@@ -68,7 +68,9 @@ namespace LifeAgain {
         int bleedoutCount = 0;
         float injuryStartDay = 0.0f;  // Yaralanma anındaki oyun günü (GetDaysPassed)
         float lastBleedoutDay = 0.0f; // En son bleedout günü (3 gün sayacı sıfırlama)
+        float savedSpeedBase = 100.0f; // Yaralanmadan onceki baz SpeedMult degeri (iyilesince geri yuklenir)
     };
+
 
     // ---- Rahip erişim kontrolü (global flag) ----
     // true = oyuncu tapınaktaki bir rahiple konuştu, menüyü açabilir
@@ -184,9 +186,11 @@ namespace LifeAgain {
                 item["bleedoutCount"] = inf.bleedoutCount;
                 item["injuryStartDay"] = inf.injuryStartDay;
                 item["lastBleedoutDay"] = inf.lastBleedoutDay;
+                item["savedSpeedBase"] = inf.savedSpeedBase;
                 injuredArr.push_back(item);
             }
             j["injured"] = injuredArr;
+
 
             nlohmann::json revivesObj = nlohmann::json::object();
             for (const auto& [id, count] : m_reviveCounts) {
@@ -238,6 +242,7 @@ namespace LifeAgain {
                         inf.bleedoutCount = item.value("bleedoutCount", 0);
                         inf.injuryStartDay = item.value("injuryStartDay", 0.0f);
                         inf.lastBleedoutDay = item.value("lastBleedoutDay", 0.0f);
+                        inf.savedSpeedBase = item.value("savedSpeedBase", 100.0f);
                         m_injured.push_back(inf);
                     }
                 }
@@ -359,8 +364,6 @@ namespace LifeAgain {
         if (!actor || level == InjuryLevel::None) return;
         auto owner = actor->AsActorValueOwner();
         if (owner) {
-            // Remove değerleri Apply ile birebir eslesmelidir
-            // Light: speed +10, Heavy: speed +20
             float damageMod = (level == InjuryLevel::Heavy) ? 0.25f : 0.10f;
             float speedMod  = (level == InjuryLevel::Heavy) ? 20.0f : 10.0f;
             float regenMod  = (level == InjuryLevel::Heavy) ? 25.0f : 15.0f;
@@ -376,23 +379,59 @@ namespace LifeAgain {
 
         // Bandaji cikar (mod yukluyse)
         UnequipBandage(actor);
+        // Yaralı animasyon durumunu sıfırla
+        actor->NotifyAnimationGraph("IdleWoundedStop");
         spdlog::info("LifeAgain: Injury debuffs removed from {}", actor->GetDisplayFullName());
     }
 
+    // savedSpeedBase kullanan overload: hizi kesin olarak yaralanma oncesi degere geri yukler
+    inline void RemoveInjuryDebuffs(RE::Actor* actor, InjuredFollower* inf) {
+        if (!actor || !inf || inf->injuryLevel == InjuryLevel::None) return;
+        auto owner = actor->AsActorValueOwner();
+        if (owner) {
+            float damageMod = (inf->injuryLevel == InjuryLevel::Heavy) ? 0.25f : 0.10f;
+            float regenMod  = (inf->injuryLevel == InjuryLevel::Heavy) ? 25.0f : 15.0f;
+            float armorMod  = (inf->injuryLevel == InjuryLevel::Heavy) ? 60.0f : 30.0f;
 
-    inline void ApplyInjuryDebuffs(RE::Actor* actor, InjuryLevel oldLevel, InjuryLevel newLevel) {
+            owner->ModActorValue(RE::ActorValue::kAttackDamageMult, damageMod);
+            owner->ModActorValue(RE::ActorValue::kHealRateMult, regenMod);
+            owner->ModActorValue(RE::ActorValue::kMagickaRateMult, regenMod);
+            owner->ModActorValue(RE::ActorValue::kStaminaRateMult, regenMod);
+            owner->ModActorValue(RE::ActorValue::kDamageResist, armorMod);
+
+            // Hizi kesin olarak eski baz degere sıfırla (stacking sorununu temizler)
+            float currentBase = owner->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+            float delta = inf->savedSpeedBase - currentBase;
+            if (std::abs(delta) > 0.1f) {
+                owner->ModActorValue(RE::ActorValue::kSpeedMult, delta);
+                spdlog::info("LifeAgain: {} hizi sifirlandi: {:.1f} -> {:.1f} (delta: {:.1f})",
+                    actor->GetDisplayFullName(), currentBase, inf->savedSpeedBase, delta);
+            }
+        }
+
+        UnequipBandage(actor);
+        // Yaralı animasyon durumunu sıfırla - bu olmadan NPC topallmaya devam eder
+        actor->NotifyAnimationGraph("IdleWoundedStop");
+        spdlog::info("LifeAgain: Injury debuffs removed from {} (savedSpeedBase restore)", actor->GetDisplayFullName());
+    }
+
+
+    inline void ApplyInjuryDebuffs(RE::Actor* actor, InjuryLevel oldLevel, InjuryLevel newLevel, InjuredFollower* inf = nullptr) {
         if (!actor) return;
         // Önce eskileri geri al (eğer varsa)
         if (oldLevel != InjuryLevel::None) {
             RemoveInjuryDebuffs(actor, oldLevel);
         }
         
-        // Yenisini uygula
-        // SpeedMult taban degeri 100'dur. -10 = 90% hiz (hafif topallama), -20 = 80% hiz (belirgin topallama)
-        // Eski -50 degeri NPC'yi neredeyse tamamen durduruyordu (50 hiz = hareket edemez).
         if (newLevel != InjuryLevel::None) {
             auto owner = actor->AsActorValueOwner();
             if (owner) {
+                // Yaralanmadan onceki baz hizi kaydet (iyilesince tam geri yuklenir)
+                if (inf && oldLevel == InjuryLevel::None) {
+                    inf->savedSpeedBase = owner->GetBaseActorValue(RE::ActorValue::kSpeedMult);
+                    spdlog::info("LifeAgain: {} savedSpeedBase kaydedildi: {:.1f}", actor->GetDisplayFullName(), inf->savedSpeedBase);
+                }
+
                 float damageMod = (newLevel == InjuryLevel::Heavy) ? -0.25f : -0.10f;
                 float speedMod  = (newLevel == InjuryLevel::Heavy) ? -20.0f : -10.0f;
                 float regenMod  = (newLevel == InjuryLevel::Heavy) ? -25.0f : -15.0f;
@@ -436,6 +475,7 @@ namespace LifeAgain {
             }
         }
     }
+
 
     // Save yuklendikten sonra, zaten yarali olan takipcilere bandaj yeniden tak
     inline void ReEquipBandagesOnLoad() {
@@ -846,14 +886,18 @@ namespace LifeAgain {
                     }
 
                     if (auto* taskInterface = SKSE::GetTaskInterface()) {
-                        taskInterface->AddTask([handle, capturedOld, capturedNew, isFemale]() {
+                        RE::FormID capturedFormID = formID;
+                        taskInterface->AddTask([handle, capturedOld, capturedNew, isFemale, capturedFormID]() {
                             auto actorPtr = handle.get();
                             if (!actorPtr) return;
                             auto* a = actorPtr.get();
                             if (!a || a->IsDead()) return;
 
                             if (capturedOld != capturedNew) {
-                                ApplyInjuryDebuffs(a, capturedOld, capturedNew);
+                                // InjuredFollower* gecerek savedSpeedBase kaydedilir
+                                auto* tr = &FollowerTracker::GetSingleton();
+                                InjuredFollower* infPtr = tr->GetInjured(capturedFormID);
+                                ApplyInjuryDebuffs(a, capturedOld, capturedNew, infPtr);
                             } else {
                                 // Ayni seviyede kalsa bile bandaj takilmamis olabilir (eski save)
                                 EquipBandage(a);
@@ -899,7 +943,8 @@ namespace LifeAgain {
 
         if (potionCount >= needed) {
             actor->RemoveItem(potionForm, needed, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-            RemoveInjuryDebuffs(actor, inf->injuryLevel);
+            // InjuredFollower* overload: savedSpeedBase'e gore hizi tam olarak geri yukler + animasyonu sifirlar
+            RemoveInjuryDebuffs(actor, inf);
             
             std::string name = inf->name;
             InjuryLevel level = inf->injuryLevel;
@@ -932,7 +977,7 @@ namespace LifeAgain {
             if (daysSinceBleedout >= 3.0f) {
                 auto* actor = RE::TESForm::LookupByID<RE::Actor>(inf.formID);
                 if (actor && !actor->IsDead()) {
-                    RemoveInjuryDebuffs(actor, InjuryLevel::Light);
+                    RemoveInjuryDebuffs(actor, &inf);  // savedSpeedBase ile tam restore + animasyon sifirla
                     
                     std::string msg = fmt::format("{} has recovered naturally. ({} sagligina kavustu.)", inf.name, inf.name);
                     RE::DebugNotification(msg.c_str());

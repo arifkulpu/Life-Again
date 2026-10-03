@@ -97,12 +97,10 @@ namespace LifeAgain {
         auto* tracker = &FollowerTracker::GetSingleton();
         InjuredFollower* inf = tracker->GetInjured(formID);
         if (inf) {
-            RemoveInjuryDebuffs(actor, inf->injuryLevel);
+            // savedSpeedBase ile tam restore + IdleWoundedStop animasyon sifirlama
+            RemoveInjuryDebuffs(actor, inf);
             tracker->RemoveInjured(formID);
         }
-        // Yasli save'lerden gelebilecek kalici debufflara karsi ek temizlik
-        // (iki seviye icin birden uygularsak fazladan pozitif mod gelebilir, bu daha az zararli)
-        // Bu yuzden yalnizca tracker'da kayitliysa yukarida temizliyoruz.
 
         FollowerTracker::GetSingleton().AddReviveCount(formID);
         spdlog::info("LifeAgain: {} hayata donduruldu", actor->GetDisplayFullName());
@@ -137,7 +135,22 @@ namespace LifeAgain {
         CheckNaturalHealing(); // Zamanli dogal iyilesmeleri kontrol et
         
         auto newList = FollowerTracker::GetSingleton().GetDeadFollowers();
-        auto newInjuredList = FollowerTracker::GetSingleton().GetInjuredFollowers();
+        auto rawInjuredList = FollowerTracker::GetSingleton().GetInjuredFollowers();
+        
+        // Ölü olan hiçbir takipçi yaralı listesinde yer alamaz
+        std::vector<InjuredFollower> newInjuredList;
+        for (auto& inf : rawInjuredList) {
+            bool isDead = false;
+            for (auto& df : newList) {
+                if (df.formID == inf.formID) {
+                    isDead = true;
+                    break;
+                }
+            }
+            if (!isDead) {
+                newInjuredList.push_back(inf);
+            }
+        }
         
         // Eger onceden secili biri varsa formID'sini hatirla
         RE::FormID selectedID = 0;
@@ -543,7 +556,8 @@ namespace LifeAgain {
                                     auto* tracker = &FollowerTracker::GetSingleton();
                                     InjuredFollower* inf = tracker->GetInjured(fid);
                                     if (inf) {
-                                        RemoveInjuryDebuffs(actor, inf->injuryLevel);
+                                        // savedSpeedBase + IdleWoundedStop ile tam iyilesme
+                                        RemoveInjuryDebuffs(actor, inf);
                                     }
                                     tracker->RemoveInjured(fid);
                                 }
