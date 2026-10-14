@@ -11,6 +11,8 @@
 #include <chrono>
 #include <ctime>
 #include <atomic>
+#include <optional>
+#include <functional>
 #include <spdlog/spdlog.h>
 #include <RE/S/ScriptEventSourceHolder.h>
 #include <RE/C/Calendar.h>
@@ -129,12 +131,24 @@ namespace LifeAgain {
             std::erase_if(m_injured, [id](const InjuredFollower& i) { return i.formID == id; });
         }
 
-        InjuredFollower* GetInjured(RE::FormID id) {
+        // Kopya döndürür: döndürülen değer vektör realokasyonunda sarkmaz
+        std::optional<InjuredFollower> GetInjured(RE::FormID id) {
             std::lock_guard lock(m_mutex);
             for (auto& i : m_injured) {
-                if (i.formID == id) return &i;
+                if (i.formID == id) return i;
             }
-            return nullptr;
+            return std::nullopt;
+        }
+
+        // Tek bir yaralı kaydını mutex kilidi altında günceller
+        void UpdateInjured(RE::FormID id, const std::function<void(InjuredFollower&)>& a_fn) {
+            std::lock_guard lock(m_mutex);
+            for (auto& i : m_injured) {
+                if (i.formID == id) {
+                    a_fn(i);
+                    return;
+                }
+            }
         }
 
         int GetReviveCount(RE::FormID id) {
@@ -527,7 +541,9 @@ namespace LifeAgain {
             raceEdid.find("Wolf") != std::string::npos)
             return FollowerKind::Dog;
         if (raceEdid.find("Cat") != std::string::npos ||
-            raceEdid.find("cat") != std::string::npos)
+            raceEdid.find("cat") != std::string::npos ||
+            raceEdid.find("Khajiit") != std::string::npos ||
+            raceEdid.find("khajiit") != std::string::npos)
             return FollowerKind::Cat;
 
         return FollowerKind::Human;
@@ -540,8 +556,22 @@ namespace LifeAgain {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return false;
 
+        // Muhafizlar, cagrili yaratiklar veya gecici komuta edilenler kesinlikle takipci degildir
+        if (actor->IsGuard() || actor->IsSummoned() || actor->IsCommandedActor()) {
+            return false;
+        }
+
         // Oyuncuya dusmansa asla yoldas degildir
         if (actor->IsHostileToActor(player)) return false;
+
+        // Mesafe / hucre kontrolü: Takipçi oyuncuyla ayni hucrede ve yakin mesafede olmali
+        if (actor->GetParentCell() != player->GetParentCell()) {
+            return false;
+        }
+        // 8000 birim (~130 metre) uzerindeki aktörler aktif takipçi sayilmaz
+        if (actor->GetPosition().GetDistance(player->GetPosition()) > 8000.0f) {
+            return false;
+        }
 
         // 1) En kesin tespit: IsPlayerTeammate() kontrolü
         // (Vanilla yoldaslar, NFF, AFT, EFF, Inigo, Lucien aktif takipteyken kesinlikle true olur)
@@ -554,10 +584,7 @@ namespace LifeAgain {
         auto* followerFaction = static_cast<RE::TESFaction*>(RE::TESForm::LookupByID(0x5C84D));
         if (followerFaction && actor->IsInFaction(followerFaction)) {
             if (actor->GetFactionRank(followerFaction, false) >= 0) {
-                // Ekstra dogrulama: Oyuncu ile ayni hucrede veya makul mesafede mi?
-                if (actor->GetParentCell() == player->GetParentCell()) {
-                    return true;
-                }
+                return true;
             }
         }
 
@@ -623,7 +650,6 @@ namespace LifeAgain {
                 lower.find("talos") != std::string::npos ||
                 lower.find("dibella") != std::string::npos ||
                 lower.find("kynareth") != std::string::npos ||
-                lower.find("mara") != std::string::npos ||
                 lower.find("zenithar") != std::string::npos ||
                 lower.find("akatosh") != std::string::npos ||
                 lower.find("julianos") != std::string::npos ||
@@ -709,17 +735,33 @@ namespace LifeAgain {
             }
 
             // Eğer yaralı listesindeyse temizle (artık öldü, dashboard'da yaralı gözükmemeli)
+            // AV/bandaj çağrıları event sink'te değil task interface'te yapılır (crash güvenliği)
             auto* tracker = &FollowerTracker::GetSingleton();
-            InjuredFollower* inf = tracker->GetInjured(df.formID);
-            if (inf) {
-                RemoveInjuryDebuffs(actor, inf->injuryLevel);
-                tracker->RemoveInjured(df.formID);
-            }
+            auto injuredOpt = tracker->GetInjured(df.formID);
+            InjuryLevel dyingLevel = injuredOpt ? injuredOpt->injuryLevel : InjuryLevel::None;
 
             spdlog::info("LifeAgain: Follower died -> {} (Level {}) at {}", df.name, df.level, df.deathDate);
+            // Mesaj, df move edilmeden ÖNCE oluşturulmalı (move sonrası df.name tanımsız)
+            std::string msg = "Your follower " + df.name + " has died! (Yoldasiniz " + df.name + " oldu!)";
+            const RE::FormID deadFormID = df.formID;
+
             FollowerTracker::GetSingleton().AddDead(std::move(df));
 
-            std::string msg = "Your follower " + df.name + " has died! (Yoldasiniz " + df.name + " oldu!)";
+            auto deadHandle = actor->GetHandle();
+            if (auto* taskInterface = SKSE::GetTaskInterface()) {
+                taskInterface->AddTask([deadHandle, dyingLevel, deadFormID]() {
+                    auto actorPtr = deadHandle.get();
+                    if (actorPtr && dyingLevel != InjuryLevel::None) {
+                        auto* a = actorPtr.get();
+                        if (a) {
+                            RemoveInjuryDebuffs(a, dyingLevel);
+                        }
+                    }
+                    FollowerTracker::GetSingleton().RemoveInjured(deadFormID);
+                });
+            } else {
+                tracker->RemoveInjured(deadFormID);
+            }
             if (g_Settings.ShowDeathNotification) {
                 RE::DebugNotification(msg.c_str());
             }
@@ -793,7 +835,8 @@ namespace LifeAgain {
 
             RE::FormID formID = actor->GetFormID();
             auto* tracker = &FollowerTracker::GetSingleton();
-            InjuredFollower* inf = tracker->GetInjured(formID);
+            auto injuredOpt = tracker->GetInjured(formID);
+            InjuredFollower* inf = injuredOpt ? &*injuredOpt : nullptr;
 
             int chance = g_Settings.BleedoutDeathChance_Healthy;
             if (inf) {
@@ -801,12 +844,13 @@ namespace LifeAgain {
                 else if (inf->injuryLevel == InjuryLevel::Heavy) chance = g_Settings.BleedoutDeathChance_Heavy;
             }
 
-            if (chance <= 0) return RE::BSEventNotifyControl::kContinue;
-
             static std::mt19937 rng{ std::random_device{}() };
             std::uniform_int_distribution<int> dist(1, 100);
-            
-            if (dist(rng) <= chance) {
+
+            // Ölüm şansı 0 ise ölüm zarı hiç atılmaz (vanilla kurallar);
+            // yaralanma zarı aşağıdaki dalda yine atılır.
+            bool died = chance > 0 && dist(rng) <= chance;
+            if (died) {
                 spdlog::info("LifeAgain: Bleedout olum sansi tetiklendi ({}/100) -> {}", chance, actor->GetDisplayFullName());
 
                 auto actorHandle = actor->GetHandle();
@@ -894,10 +938,20 @@ namespace LifeAgain {
                             if (!a || a->IsDead()) return;
 
                             if (capturedOld != capturedNew) {
-                                // InjuredFollower* gecerek savedSpeedBase kaydedilir
+                                // Kopya üzerinden uygula; savedSpeedBase değişikliğini
+                                // mutex kilidi altında orijinal kayda geri yaz
                                 auto* tr = &FollowerTracker::GetSingleton();
-                                InjuredFollower* infPtr = tr->GetInjured(capturedFormID);
-                                ApplyInjuryDebuffs(a, capturedOld, capturedNew, infPtr);
+                                auto infOpt = tr->GetInjured(capturedFormID);
+                                if (infOpt) {
+                                    InjuredFollower infCopy = *infOpt;
+                                    ApplyInjuryDebuffs(a, capturedOld, capturedNew, &infCopy);
+                                    const float savedSpeed = infCopy.savedSpeedBase;
+                                    tr->UpdateInjured(capturedFormID, [savedSpeed](InjuredFollower& rec) {
+                                        rec.savedSpeedBase = savedSpeed;
+                                    });
+                                } else {
+                                    ApplyInjuryDebuffs(a, capturedOld, capturedNew, nullptr);
+                                }
                             } else {
                                 // Ayni seviyede kalsa bile bandaj takilmamis olabilir (eski save)
                                 EquipBandage(a);
@@ -1000,8 +1054,8 @@ namespace LifeAgain {
             if (!event || event->newContainer == 0) return RE::BSEventNotifyControl::kContinue;
 
             auto* tracker = &FollowerTracker::GetSingleton();
-            InjuredFollower* inf = tracker->GetInjured(event->newContainer);
-            if (inf) {
+            auto injuredOpt = tracker->GetInjured(event->newContainer);
+            if (injuredOpt) {
                 auto* actor = RE::TESForm::LookupByID<RE::Actor>(event->newContainer);
                 if (actor) {
                     // Cagiriyi asenkron yapalim ki envanter tam guncellenmis olsun
@@ -1010,8 +1064,8 @@ namespace LifeAgain {
                         task->AddTask([formID]() {
                             auto* a = RE::TESForm::LookupByID<RE::Actor>(formID);
                             auto* tr = &FollowerTracker::GetSingleton();
-                            InjuredFollower* i = tr->GetInjured(formID);
-                            if (a && i) CheckPotionHealing(a, i);
+                            auto i = tr->GetInjured(formID);
+                            if (a && i) CheckPotionHealing(a, &*i);
                         });
                     }
                 }
