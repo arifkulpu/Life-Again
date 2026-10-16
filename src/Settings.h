@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 
 namespace LifeAgain {
 
@@ -13,22 +14,16 @@ namespace LifeAgain {
         int BleedoutDeathChance_Light = 15;
         int BleedoutDeathChance_Heavy = 40;
         
-        // Tedavi bedeli = yoldas_seviyesi * InjuryCostMultiplier
-        int LightInjuryCostMultiplier = 100;
-        int HeavyInjuryCostMultiplier = 300;
-
         bool ShowDeathNotification = true;
         bool ShowDeathMessageBox = false;
 
-        int InjuryChance = 15;
+        int LightInjuryChance = 5;
+        int HeavyInjuryChance = 1;
         bool ShowInjuryNotification = true;
         bool ShowInjuryMessageBox = false;
 
         int MaxRevives = 3;
 
-        int PotionRequirementLight = 3;
-        int PotionRequirementHeavy = 10;
-        
         bool UseGoldForRevive = true;
         bool UseSoulGemsForRevive = true;
     };
@@ -51,18 +46,22 @@ namespace LifeAgain {
             if (j.contains("BleedoutDeathChance_Healthy")) g_Settings.BleedoutDeathChance_Healthy = j["BleedoutDeathChance_Healthy"].get<int>();
             if (j.contains("BleedoutDeathChance_Light")) g_Settings.BleedoutDeathChance_Light = j["BleedoutDeathChance_Light"].get<int>();
             if (j.contains("BleedoutDeathChance_Heavy")) g_Settings.BleedoutDeathChance_Heavy = j["BleedoutDeathChance_Heavy"].get<int>();
-            if (j.contains("LightInjuryCostMultiplier")) g_Settings.LightInjuryCostMultiplier = j["LightInjuryCostMultiplier"].get<int>();
-            if (j.contains("HeavyInjuryCostMultiplier")) g_Settings.HeavyInjuryCostMultiplier = j["HeavyInjuryCostMultiplier"].get<int>();
             if (j.contains("ShowDeathNotification")) g_Settings.ShowDeathNotification = j["ShowDeathNotification"].get<bool>();
             if (j.contains("ShowDeathMessageBox")) g_Settings.ShowDeathMessageBox = j["ShowDeathMessageBox"].get<bool>();
-            if (j.contains("InjuryChance")) g_Settings.InjuryChance = j["InjuryChance"].get<int>();
+            if (j.contains("LightInjuryChance")) g_Settings.LightInjuryChance = j["LightInjuryChance"].get<int>();
+            if (j.contains("HeavyInjuryChance")) g_Settings.HeavyInjuryChance = j["HeavyInjuryChance"].get<int>();
             if (j.contains("ShowInjuryNotification")) g_Settings.ShowInjuryNotification = j["ShowInjuryNotification"].get<bool>();
             if (j.contains("ShowInjuryMessageBox")) g_Settings.ShowInjuryMessageBox = j["ShowInjuryMessageBox"].get<bool>();
             if (j.contains("MaxRevives")) g_Settings.MaxRevives = j["MaxRevives"].get<int>();
-            if (j.contains("PotionRequirementLight")) g_Settings.PotionRequirementLight = j["PotionRequirementLight"].get<int>();
-            if (j.contains("PotionRequirementHeavy")) g_Settings.PotionRequirementHeavy = j["PotionRequirementHeavy"].get<int>();
             if (j.contains("UseGoldForRevive")) g_Settings.UseGoldForRevive = j["UseGoldForRevive"].get<bool>();
             if (j.contains("UseSoulGemsForRevive")) g_Settings.UseSoulGemsForRevive = j["UseSoulGemsForRevive"].get<bool>();
+            if (g_Settings.LightInjuryChance == 25 && g_Settings.HeavyInjuryChance == 5) {
+                g_Settings.LightInjuryChance = 5;
+                g_Settings.HeavyInjuryChance = 1;
+            }
+            g_Settings.LightInjuryChance = std::clamp(g_Settings.LightInjuryChance, 0, 100);
+            const int maxHeavyRisk = g_Settings.LightInjuryChance > 1 ? (g_Settings.LightInjuryChance - 1) / 2 : 0;
+            g_Settings.HeavyInjuryChance = std::clamp(g_Settings.HeavyInjuryChance, 0, maxHeavyRisk);
         } catch (...) {}
     }
 
@@ -75,16 +74,13 @@ namespace LifeAgain {
             j["BleedoutDeathChance_Healthy"] = g_Settings.BleedoutDeathChance_Healthy;
             j["BleedoutDeathChance_Light"] = g_Settings.BleedoutDeathChance_Light;
             j["BleedoutDeathChance_Heavy"] = g_Settings.BleedoutDeathChance_Heavy;
-            j["LightInjuryCostMultiplier"] = g_Settings.LightInjuryCostMultiplier;
-            j["HeavyInjuryCostMultiplier"] = g_Settings.HeavyInjuryCostMultiplier;
             j["ShowDeathNotification"] = g_Settings.ShowDeathNotification;
             j["ShowDeathMessageBox"] = g_Settings.ShowDeathMessageBox;
-            j["InjuryChance"] = g_Settings.InjuryChance;
+            j["LightInjuryChance"] = g_Settings.LightInjuryChance;
+            j["HeavyInjuryChance"] = g_Settings.HeavyInjuryChance;
             j["ShowInjuryNotification"] = g_Settings.ShowInjuryNotification;
             j["ShowInjuryMessageBox"] = g_Settings.ShowInjuryMessageBox;
             j["MaxRevives"] = g_Settings.MaxRevives;
-            j["PotionRequirementLight"] = g_Settings.PotionRequirementLight;
-            j["PotionRequirementHeavy"] = g_Settings.PotionRequirementHeavy;
             j["UseGoldForRevive"] = g_Settings.UseGoldForRevive;
             j["UseSoulGemsForRevive"] = g_Settings.UseSoulGemsForRevive;
             

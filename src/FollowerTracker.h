@@ -2,38 +2,45 @@
 #include <SKSE/SKSE.h>
 #undef PlaySound
 #include <random>
+#include <array>
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <mutex>
 #include <chrono>
 #include <ctime>
+#include <numeric>
 #include <atomic>
 #include <optional>
 #include <functional>
+#include <thread>
+#include <deque>
+#include <unordered_map>
+#include <unordered_set>
 #include <spdlog/spdlog.h>
 #include <RE/S/ScriptEventSourceHolder.h>
 #include <RE/C/Calendar.h>
 #include <RE/T/TESRace.h>
 #include <RE/P/PlayerCharacter.h>
+#include <RE/P/ProcessLists.h>
 #include <RE/T/TESDeathEvent.h>
 #include <RE/T/TESFaction.h>
 #include <RE/T/TESActivateEvent.h>
 #include <RE/T/TESEnterBleedoutEvent.h>
 #include <RE/T/TESContainerChangedEvent.h>
-#include <RE/T/TESWaitStopEvent.h>
-#include <RE/T/TESSleepStopEvent.h>
-#include <RE/T/TESFastTravelEndEvent.h>
+#include <RE/T/TESHitEvent.h>
+#include <RE/T/TESObjectCELL.h>
+#include <RE/U/UI.h>
 #include <RE/M/Misc.h>
 #include <RE/B/BGSLocation.h>
 #include <RE/B/BGSKeyword.h>
 #include <RE/I/InventoryChanges.h>
 #include <RE/A/AlchemyItem.h>
 #include <RE/T/TESDataHandler.h>
-#include <RE/A/ActorEquipManager.h>
-#include <RE/T/TESObjectARMO.h>
+#include "LifeAgainAPI.h"
 
 namespace LifeAgain {
 
@@ -61,17 +68,69 @@ namespace LifeAgain {
         Heavy = 2
     };
 
+    enum class InjuryType : std::uint8_t {
+        Abrasion = 0,
+        Cut = 1,
+        MinorBurn = 2,
+        Bruise = 3,
+        DeepCut = 4,
+        Puncture = 5,
+        Crush = 6,
+        SevereBurn = 7,
+        Count = 8
+    };
+
+    inline constexpr std::size_t kInjuryTypeCount = static_cast<std::size_t>(InjuryType::Count);
+    inline constexpr std::array<const char*, kInjuryTypeCount> kInjuryTypeNames{
+        "Abrasion (Siyrik)", "Cut (Kesik)", "Minor Burn (Hafif Yanık)", "Bruise (Ezik/Morluk)",
+        "Deep Cut (Derin Kesik)", "Puncture (Delici Yara)", "Crush (Ezilme/Parçalanma)", "Severe Burn (Ciddi Yanık)"
+    };
+
+    inline InjuryLevel GetInjuryLevel(const std::array<std::uint16_t, kInjuryTypeCount>& a_counts) {
+        for (std::size_t i = 4; i < a_counts.size(); ++i) {
+            if (a_counts[i] > 0) return InjuryLevel::Heavy;
+        }
+        for (std::size_t i = 0; i < 4; ++i) {
+            if (a_counts[i] > 0) return InjuryLevel::Light;
+        }
+        return InjuryLevel::None;
+    }
+
+    inline int GetInjuryPotionCost(const std::array<std::uint16_t, kInjuryTypeCount>& a_counts) {
+        int cost = 0;
+        for (std::size_t i = 0; i < a_counts.size(); ++i) {
+            cost += static_cast<int>(a_counts[i]) * (i < 4 ? 1 : 3);
+        }
+        return cost;
+    }
+
+    inline int GetInjuryGoldCost(const std::array<std::uint16_t, kInjuryTypeCount>& a_counts) {
+        int cost = 0;
+        for (std::size_t i = 0; i < a_counts.size(); ++i) {
+            cost += static_cast<int>(a_counts[i]) * (i < 4 ? 100 : 250);
+        }
+        return cost;
+    }
+
+    inline void DispatchFollowerInjuryState(RE::FormID a_formID, InjuryLevel a_level, InjuryType a_type = InjuryType::Count, std::uint16_t a_count = 0);
+    inline void PublishFollowerInjuryState(RE::FormID a_formID, InjuryLevel a_level, InjuryType a_type = InjuryType::Count, std::uint16_t a_count = 0);
+    struct InjuredFollower;
+    inline void CheckPotionHealing(RE::Actor* actor, InjuredFollower* inf);
+    inline bool IsPriest(RE::Actor* actor);
+
     struct InjuredFollower {
         RE::FormID formID = 0;
         std::string name;
         int level = 1;
         FollowerKind kind = FollowerKind::Human;
         InjuryLevel injuryLevel = InjuryLevel::Light;
-        int bleedoutCount = 0;
-        float injuryStartDay = 0.0f;  // Yaralanma anındaki oyun günü (GetDaysPassed)
-        float lastBleedoutDay = 0.0f; // En son bleedout günü (3 gün sayacı sıfırlama)
+        std::array<std::uint16_t, kInjuryTypeCount> injuryCounts{};
         float savedSpeedBase = 100.0f; // Yaralanmadan onceki baz SpeedMult degeri (iyilesince geri yuklenir)
+        float recoveryLastGameDay = -1.0f;
+        float recoveryProgressDays = 0.0f;
     };
+
+    inline void PublishFollowerInjuryRecord(const InjuredFollower& a_follower);
 
 
     // ---- Rahip erişim kontrolü (global flag) ----
@@ -113,22 +172,35 @@ namespace LifeAgain {
         }
 
         void AddOrUpdateInjured(InjuredFollower inv) {
-            std::lock_guard lock(m_mutex);
-            for (auto& i : m_injured) {
-                if (i.formID == inv.formID) {
-                    i.injuryLevel = inv.injuryLevel;
-                    i.bleedoutCount = inv.bleedoutCount;
-                    i.lastBleedoutDay = inv.lastBleedoutDay;
-                    if (i.injuryStartDay == 0.0f) i.injuryStartDay = inv.injuryStartDay;
-                    return;
+            const auto formID = inv.formID;
+            {
+                std::lock_guard lock(m_mutex);
+                bool found = false;
+                for (auto& i : m_injured) {
+                    if (i.formID == inv.formID) {
+                        i.injuryLevel = inv.injuryLevel;
+                        i.injuryCounts = inv.injuryCounts;
+                        i.recoveryLastGameDay = inv.recoveryLastGameDay;
+                        i.recoveryProgressDays = inv.recoveryProgressDays;
+                        found = true;
+                        break;
+                    }
                 }
+                if (!found) m_injured.push_back(std::move(inv));
             }
-            m_injured.push_back(std::move(inv));
+            const auto current = GetInjured(formID);
+            if (current) PublishFollowerInjuryRecord(*current);
         }
 
         void RemoveInjured(RE::FormID id) {
-            std::lock_guard lock(m_mutex);
-            std::erase_if(m_injured, [id](const InjuredFollower& i) { return i.formID == id; });
+            bool removed = false;
+            {
+                std::lock_guard lock(m_mutex);
+                const auto oldSize = m_injured.size();
+                std::erase_if(m_injured, [id](const InjuredFollower& i) { return i.formID == id; });
+                removed = oldSize != m_injured.size();
+            }
+            if (removed) PublishFollowerInjuryState(id, InjuryLevel::None);
         }
 
         // Kopya döndürür: döndürülen değer vektör realokasyonunda sarkmaz
@@ -166,10 +238,13 @@ namespace LifeAgain {
         }
 
         void Clear() {
-            std::lock_guard lock(m_mutex);
-            m_dead.clear();
-            m_injured.clear();
-            m_reviveCounts.clear();
+            {
+                std::lock_guard lock(m_mutex);
+                m_dead.clear();
+                m_injured.clear();
+                m_reviveCounts.clear();
+            }
+            PublishFollowerInjuryState(0, InjuryLevel::None);
             spdlog::info("FollowerTracker: Tum veriler temizlendi (Revert).");
         }
 
@@ -197,10 +272,10 @@ namespace LifeAgain {
                 item["level"] = inf.level;
                 item["kind"] = static_cast<int>(inf.kind);
                 item["injuryLevel"] = static_cast<int>(inf.injuryLevel);
-                item["bleedoutCount"] = inf.bleedoutCount;
-                item["injuryStartDay"] = inf.injuryStartDay;
-                item["lastBleedoutDay"] = inf.lastBleedoutDay;
+                item["injuryCounts"] = inf.injuryCounts;
                 item["savedSpeedBase"] = inf.savedSpeedBase;
+                item["recoveryLastGameDay"] = inf.recoveryLastGameDay;
+                item["recoveryProgressDays"] = inf.recoveryProgressDays;
                 injuredArr.push_back(item);
             }
             j["injured"] = injuredArr;
@@ -253,10 +328,19 @@ namespace LifeAgain {
                         inf.level = item.value("level", 1);
                         inf.kind = static_cast<FollowerKind>(item.value("kind", 0));
                         inf.injuryLevel = static_cast<InjuryLevel>(item.value("injuryLevel", 1));
-                        inf.bleedoutCount = item.value("bleedoutCount", 0);
-                        inf.injuryStartDay = item.value("injuryStartDay", 0.0f);
-                        inf.lastBleedoutDay = item.value("lastBleedoutDay", 0.0f);
+                        if (item.contains("injuryCounts") && item["injuryCounts"].is_array()) {
+                            const auto& counts = item["injuryCounts"];
+                            for (std::size_t n = 0; n < std::min(counts.size(), kInjuryTypeCount); ++n) {
+                                inf.injuryCounts[n] = counts[n].get<std::uint16_t>();
+                            }
+                        } else {
+                            // Migrate an old save's single Light/Heavy status to the new wound list.
+                            inf.injuryCounts[inf.injuryLevel == InjuryLevel::Heavy ? 4 : 1] = 1;
+                        }
+                        inf.injuryLevel = GetInjuryLevel(inf.injuryCounts);
                         inf.savedSpeedBase = item.value("savedSpeedBase", 100.0f);
+                        inf.recoveryLastGameDay = item.value("recoveryLastGameDay", -1.0f);
+                        inf.recoveryProgressDays = item.value("recoveryProgressDays", 0.0f);
                         m_injured.push_back(inf);
                     }
                 }
@@ -285,101 +369,66 @@ namespace LifeAgain {
         std::map<RE::FormID, int> m_reviveCounts;
     };
 
-
-    // ---- Yardımcı fonksiyonlar ----
-
-    // ---- Yaralanma Bandaji Yardimci Fonksiyonlari ----
-    // "Usable Skyrim Bandages.esp" yukluyse kafa bandajini giydirir/cikarir.
-    // Mod yuklu degilse hicbir islem yapilmaz.
-    static constexpr std::uint32_t kBandageLocalFormID = 0x805; // RxHeadBandagesL (Head bandages - Left)
-    static constexpr const char*   kBandagePlugin      = "Usable Skyrim Bandages.esp";
-
-    inline RE::TESObjectARMO* GetBandageItem() {
-        auto* handler = RE::TESDataHandler::GetSingleton();
-        if (!handler) {
-            spdlog::warn("LifeAgain: GetBandageItem - TESDataHandler null!");
-            return nullptr;
-        }
-
-        // 1. Yol: LookupForm<T> ile doğrudan çek (ESL/Normal otomatik)
-        auto* armor = handler->LookupForm<RE::TESObjectARMO>(kBandageLocalFormID, kBandagePlugin);
-        if (armor) {
-            spdlog::info("LifeAgain: Bandage formu bulundu. FormID={:08X} Name={}", armor->GetFormID(), armor->GetFullName());
-            return armor;
-        }
-
-        // 2. Yol: ESL olarak plugin arayıp tam FormID hesapla (FE xxx 805)
-        const RE::TESFile* file = handler->LookupLoadedLightModByName(kBandagePlugin);
-        if (!file) {
-            file = handler->LookupLoadedModByName(kBandagePlugin);
-        }
-        if (!file) {
-            file = handler->LookupModByName(kBandagePlugin);
-        }
-
-        if (file) {
-            RE::FormID fullFormID = 0;
-            if (file->compileIndex == 0xFE || file->IsLight()) {
-                fullFormID = 0xFE000000 | (static_cast<RE::FormID>(file->smallFileCompileIndex) << 12) | (kBandageLocalFormID & 0xFFF);
-            } else {
-                fullFormID = (static_cast<RE::FormID>(file->compileIndex) << 24) | (kBandageLocalFormID & 0xFFFFFF);
-            }
-
-            auto* form = RE::TESForm::LookupByID<RE::TESObjectARMO>(fullFormID);
-            if (form) {
-                spdlog::info("LifeAgain: Bandage formu TESFile uzerinden bulundu. FormID={:08X} Name={}", form->GetFormID(), form->GetFullName());
-                return form;
-            }
-        }
-
-        spdlog::warn("LifeAgain: Usable Skyrim Bandages veya Bandage formu bulunamadi (FormID: 0x{:X}).", kBandageLocalFormID);
-        return nullptr;
-    }
-
-    inline void EquipBandage(RE::Actor* actor) {
-        if (!actor) return;
-        auto* bandage = GetBandageItem();
-        if (!bandage) {
-            spdlog::warn("LifeAgain: Bandage formu bulunamadi (Usable Skyrim Bandages yuklu degil veya FormID bulunamadi).");
+    inline void DispatchFollowerInjuryState(RE::FormID a_formID, InjuryLevel a_level, InjuryType a_type, std::uint16_t a_count) {
+        auto* messaging = SKSE::GetMessagingInterface();
+        auto trace = spdlog::get("LifeAgainTreatment");
+        if (!messaging) {
+            if (trace) trace->error("Injury visual dispatch skipped: SKSE messaging interface unavailable; actor={:08X}.", a_formID);
             return;
         }
 
-        // Envanterinde zaten var mi kontrol et — varsa tekrar ekleme, sadece giydir
-        auto inv = actor->GetInventory([bandage](RE::TESBoundObject& obj) {
-            return &obj == static_cast<RE::TESBoundObject*>(bandage);
-        });
-        bool alreadyInInventory = !inv.empty();
-        if (!alreadyInInventory) {
-            actor->AddObjectToContainer(bandage, nullptr, 1, nullptr);
+        API::FollowerInjuryStateEvent event{};
+        event.formID = a_formID;
+        switch (a_level) {
+            case InjuryLevel::Light: event.state = API::InjuryState::Light; break;
+            case InjuryLevel::Heavy: event.state = API::InjuryState::Heavy; break;
+            default: event.state = API::InjuryState::Cleared; break;
         }
-        if (auto* em = RE::ActorEquipManager::GetSingleton()) {
-            em->EquipObject(actor, bandage, nullptr, 1, nullptr, true, true, false, true);
+        event.injuryType = a_type == InjuryType::Count ? API::InjuryType::None : static_cast<API::InjuryType>(a_type);
+        event.injuryCount = a_count;
+        if (trace) trace->info("Dispatching injury visual state: actor={:08X}, state={}, type={}, count={}",
+            a_formID, static_cast<int>(event.state), static_cast<int>(event.injuryType), event.injuryCount);
+        messaging->Dispatch(API::kFollowerInjuryStateMessage, &event, sizeof(event), nullptr);
+        if (trace) trace->info("Injury visual state dispatch returned: actor={:08X}.", a_formID);
+    }
+
+    inline void PublishFollowerInjuryState(RE::FormID a_formID, InjuryLevel a_level, InjuryType a_type, std::uint16_t a_count) {
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([a_formID, a_level, a_type, a_count]() {
+                DispatchFollowerInjuryState(a_formID, a_level, a_type, a_count);
+            });
+        } else {
+            DispatchFollowerInjuryState(a_formID, a_level, a_type, a_count);
         }
-        actor->Update3DModel();
-        spdlog::info("LifeAgain: {} kafa bandaji basariyla takildi.", actor->GetDisplayFullName());
+    }
+
+    inline void PublishFollowerInjuryRecord(const InjuredFollower& a_follower) {
+        PublishFollowerInjuryState(a_follower.formID, InjuryLevel::None);
+        for (std::size_t i = 0; i < a_follower.injuryCounts.size(); ++i) {
+            const auto count = a_follower.injuryCounts[i];
+            if (count == 0) continue;
+            const auto type = static_cast<InjuryType>(i);
+            PublishFollowerInjuryState(a_follower.formID, i < 4 ? InjuryLevel::Light : InjuryLevel::Heavy, type, count);
+        }
+    }
+
+    inline void PublishFollowerInjurySnapshot() {
+        DispatchFollowerInjuryState(0, InjuryLevel::None);
+        const auto injured = FollowerTracker::GetSingleton().GetInjuredFollowers();
+        for (const auto& follower : injured) {
+            PublishFollowerInjuryRecord(follower);
+        }
     }
 
 
-    inline void UnequipBandage(RE::Actor* actor) {
-        if (!actor) return;
-        auto* bandage = GetBandageItem();
-        if (!bandage) return;
-
-        // Bandaji cikar ve envanterden sil
-        if (auto* em = RE::ActorEquipManager::GetSingleton()) {
-            em->UnequipObject(actor, bandage, nullptr, 1, nullptr, true, true, false, true);
-        }
-        actor->RemoveItem(bandage, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-        actor->Update3DModel();
-        spdlog::info("LifeAgain: {} kafa bandaji cikarildi.", actor->GetDisplayFullName());
-    }
+    // ---- Yardımcı fonksiyonlar ----
 
     inline void RemoveInjuryDebuffs(RE::Actor* actor, InjuryLevel level) {
         if (!actor || level == InjuryLevel::None) return;
         auto owner = actor->AsActorValueOwner();
         if (owner) {
             float damageMod = (level == InjuryLevel::Heavy) ? 0.25f : 0.10f;
-            float speedMod  = (level == InjuryLevel::Heavy) ? 20.0f : 10.0f;
+            float speedMod  = (level == InjuryLevel::Heavy) ? 45.0f : 10.0f;
             float regenMod  = (level == InjuryLevel::Heavy) ? 25.0f : 15.0f;
             float armorMod  = (level == InjuryLevel::Heavy) ? 60.0f : 30.0f;
 
@@ -390,9 +439,6 @@ namespace LifeAgain {
             owner->ModActorValue(RE::ActorValue::kStaminaRateMult, regenMod);
             owner->ModActorValue(RE::ActorValue::kDamageResist, armorMod);
         }
-
-        // Bandaji cikar (mod yukluyse)
-        UnequipBandage(actor);
         // Yaralı animasyon durumunu sıfırla
         actor->NotifyAnimationGraph("IdleWoundedStop");
         spdlog::info("LifeAgain: Injury debuffs removed from {}", actor->GetDisplayFullName());
@@ -423,12 +469,27 @@ namespace LifeAgain {
             }
         }
 
-        UnequipBandage(actor);
         // Yaralı animasyon durumunu sıfırla - bu olmadan NPC topallmaya devam eder
         actor->NotifyAnimationGraph("IdleWoundedStop");
         spdlog::info("LifeAgain: Injury debuffs removed from {} (savedSpeedBase restore)", actor->GetDisplayFullName());
     }
 
+    // Avoid Actor::GetGoldAmount() for custom followers. That helper filters every
+    // inventory entry by dereferencing its form; some modded followers expose a
+    // stale entry that can crash there. Count Septims directly by pointer instead.
+    inline int GetSafeActorGoldCount(RE::Actor* actor)
+    {
+        if (!actor) return 0;
+        auto* gold = static_cast<RE::TESBoundObject*>(RE::TESForm::LookupByID(0x0000000F));
+        auto* base = actor->GetActorBase();
+        if (!gold || !base) return 0;
+
+        int count = base->CountObjectsInContainer(gold);
+        if (auto* changes = actor->GetInventoryChanges(true)) {
+            count += changes->GetItemCount(gold);
+        }
+        return std::max(0, count);
+    }
 
     inline void ApplyInjuryDebuffs(RE::Actor* actor, InjuryLevel oldLevel, InjuryLevel newLevel, InjuredFollower* inf = nullptr) {
         if (!actor) return;
@@ -447,7 +508,9 @@ namespace LifeAgain {
                 }
 
                 float damageMod = (newLevel == InjuryLevel::Heavy) ? -0.25f : -0.10f;
-                float speedMod  = (newLevel == InjuryLevel::Heavy) ? -20.0f : -10.0f;
+                // Heavy followers retain a slow walking pace; OAR replaces their
+                // run/sprint clips with matching wounded walk clips.
+                float speedMod  = (newLevel == InjuryLevel::Heavy) ? -45.0f : -10.0f;
                 float regenMod  = (newLevel == InjuryLevel::Heavy) ? -25.0f : -15.0f;
                 float armorMod  = (newLevel == InjuryLevel::Heavy) ? -60.0f : -30.0f;
 
@@ -460,9 +523,6 @@ namespace LifeAgain {
             }
             spdlog::info("LifeAgain: {} is now injured (Level: {}). SpeedMod & DamageMod applied.", actor->GetDisplayFullName(), (int)newLevel);
             
-            // Bandaj tak (mod yukluyse)
-            EquipBandage(actor);
-
             // Inleme sesi caldir ve animasyon yolla
             auto* base = actor->GetActorBase();
             bool isFemale = base && (base->GetSex() == 1);
@@ -491,26 +551,90 @@ namespace LifeAgain {
     }
 
 
-    // Save yuklendikten sonra, zaten yarali olan takipcilere bandaj yeniden tak
-    inline void ReEquipBandagesOnLoad() {
-        auto* tracker = &FollowerTracker::GetSingleton();
-        auto injured = tracker->GetInjuredFollowers();  // kopya al
-        if (injured.empty()) {
-            spdlog::info("LifeAgain: ReEquipBandagesOnLoad - yarali takipci yok.");
-            return;
-        }
-        spdlog::info("LifeAgain: ReEquipBandagesOnLoad - {} yarali takipci icin bandaj takiliyor.", injured.size());
-        for (auto& inf : injured) {
-            auto* form = RE::TESForm::LookupByID(inf.formID);
-            if (!form) continue;
-            auto* actor = form->As<RE::Actor>();
-            if (!actor || actor->IsDead()) continue;
-            spdlog::info("LifeAgain: {} icin bandaj yeniden takiliyor.", actor->GetDisplayFullName());
-            EquipBandage(actor);
-        }
+    // Save loading relies on the injury snapshot to restore scars/OAR state; no bandage gear is used.
+    inline void RefreshInjuryBridgeOnLoad() {
+        PublishFollowerInjurySnapshot();
     }
 
+    inline void ProcessNaturalLightWoundHealing(float a_eventGameDay = -1.0f)
+    {
+        constexpr float recoveryDaysPerLightWound = 3.0f;
+        auto* calendar = RE::Calendar::GetSingleton();
+        if (!calendar) return;
+        const float currentGameDay = a_eventGameDay >= 0.0f ? a_eventGameDay : calendar->GetDaysPassed();
+        auto trace = spdlog::get("LifeAgainTreatment");
+        auto& tracker = FollowerTracker::GetSingleton();
 
+        for (auto record : tracker.GetInjuredFollowers()) {
+            const auto lightWounds = std::accumulate(record.injuryCounts.begin(), record.injuryCounts.begin() + 4, 0u);
+            if (record.recoveryLastGameDay < 0.0f || currentGameDay < record.recoveryLastGameDay) {
+                record.recoveryLastGameDay = currentGameDay;
+                record.recoveryProgressDays = 0.0f;
+                tracker.UpdateInjured(record.formID, [record](InjuredFollower& current) {
+                    current.recoveryLastGameDay = record.recoveryLastGameDay;
+                    current.recoveryProgressDays = record.recoveryProgressDays;
+                });
+                continue;
+            }
+
+            const float elapsed = currentGameDay - record.recoveryLastGameDay;
+            record.recoveryLastGameDay = currentGameDay;
+            if (lightWounds == 0) {
+                record.recoveryProgressDays = 0.0f;
+                tracker.UpdateInjured(record.formID, [record](InjuredFollower& current) {
+                    current.recoveryLastGameDay = record.recoveryLastGameDay;
+                    current.recoveryProgressDays = record.recoveryProgressDays;
+                });
+                continue;
+            }
+
+            record.recoveryProgressDays += elapsed;
+            bool healedAny = false;
+            static std::mt19937 rng{ std::random_device{}() };
+            while (record.recoveryProgressDays >= recoveryDaysPerLightWound) {
+                const auto remainingLight = std::accumulate(record.injuryCounts.begin(), record.injuryCounts.begin() + 4, 0u);
+                if (remainingLight == 0) {
+                    record.recoveryProgressDays = 0.0f;
+                    break;
+                }
+                std::uniform_int_distribution<std::uint32_t> woundRoll(0, remainingLight - 1);
+                auto roll = woundRoll(rng);
+                std::size_t type = 0;
+                for (; type < 4; ++type) {
+                    if (roll < record.injuryCounts[type]) break;
+                    roll -= record.injuryCounts[type];
+                }
+                if (type >= 4 || record.injuryCounts[type] == 0) break;
+                --record.injuryCounts[type];
+                record.recoveryProgressDays -= recoveryDaysPerLightWound;
+                healedAny = true;
+                if (trace) trace->info("Natural recovery healed one light wound: follower={:08X}, type={}, gameDay={:.2f}.",
+                    record.formID, kInjuryTypeNames[type], currentGameDay);
+            }
+
+            const auto oldLevel = record.injuryLevel;
+            record.injuryLevel = GetInjuryLevel(record.injuryCounts);
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(record.formID);
+            if (healedAny && record.injuryLevel == InjuryLevel::None) {
+                auto previous = tracker.GetInjured(record.formID);
+                if (actor && previous) RemoveInjuryDebuffs(actor, &*previous);
+                tracker.RemoveInjured(record.formID);
+                if (actor) RE::DebugNotification(fmt::format("{} has recovered from all injuries. ({} tamamen iyilesti.)", record.name, record.name).c_str());
+            } else {
+                if (actor && oldLevel != record.injuryLevel) {
+                    ApplyInjuryDebuffs(actor, oldLevel, record.injuryLevel);
+                }
+                if (healedAny) {
+                    tracker.AddOrUpdateInjured(record);
+                } else {
+                    tracker.UpdateInjured(record.formID, [record](InjuredFollower& current) {
+                        current.recoveryLastGameDay = record.recoveryLastGameDay;
+                        current.recoveryProgressDays = record.recoveryProgressDays;
+                    });
+                }
+            }
+        }
+    }
 
     // Oyun içi zamanı string'e çevirir
     inline std::string GetCurrentGameTimeString() {
@@ -605,6 +729,23 @@ namespace LifeAgain {
         }
 
         return false;
+    }
+
+    // Injuries are designed for humanoid party followers. Animal companions
+    // can still be recognized by the follower/death system, but never receive
+    // Life Again wounds or enter the injury test lab.
+    inline bool IsInjuryEligibleFollower(RE::Actor* actor) {
+        if (!actor || actor->IsPlayerRef() || actor->IsDead() || actor->IsGuard() ||
+            actor->IsSummoned() || actor->IsCommandedActor() || !actor->IsPlayerTeammate()) return false;
+        const auto* race = actor->GetRace();
+        if (!race || !race->data.flags.any(RE::RACE_DATA::Flag::kPlayable)) return false;
+        const char* raceEditorID = race->GetFormEditorID();
+        if (raceEditorID) {
+            const std::string_view raceName{ raceEditorID };
+            if (raceName.find("Khajiit") != std::string_view::npos ||
+                raceName.find("khajiit") != std::string_view::npos) return false;
+        }
+        return true;
     }
 
     // ---- Aktörün Rahip olup olmadığını kontrol et ----
@@ -803,6 +944,7 @@ namespace LifeAgain {
                 g_PriestAccess = true;
                 g_PriestName   = target->GetDisplayFullName();
                 spdlog::info("LifeAgain: Rahip erişimi verildi -> {}", g_PriestName);
+                // Priest access only unlocks the player's manual healing/revival menus.
             } else {
                 // Rahip değilse erişimi sıfırla
                 // (Menü ancak tekrar rahiple konuşunca açılabilir)
@@ -814,6 +956,138 @@ namespace LifeAgain {
 
             return RE::BSEventNotifyControl::kContinue;
         }
+    };
+
+    inline void RecordBattleWound(RE::Actor* a_actor, InjuryType a_type)
+    {
+        auto trace = spdlog::get("LifeAgainTreatment");
+        if (!IsInjuryEligibleFollower(a_actor) || a_actor->IsDead() ||
+            static_cast<std::size_t>(a_type) >= kInjuryTypeCount) return;
+        const auto formID = a_actor->GetFormID();
+        if (trace) trace->info("Wound application requested: actor={:08X} ({}), type={}",
+            formID, a_actor->GetDisplayFullName(), kInjuryTypeNames[static_cast<std::size_t>(a_type)]);
+        auto& tracker = FollowerTracker::GetSingleton();
+        auto current = tracker.GetInjured(formID);
+        InjuredFollower updated;
+        const InjuryLevel oldLevel = current ? current->injuryLevel : InjuryLevel::None;
+        if (current) {
+            updated = *current;
+        } else {
+            updated.formID = formID;
+            updated.name = a_actor->GetDisplayFullName();
+            updated.level = a_actor->GetLevel();
+            updated.kind = DetectKind(a_actor);
+            if (auto* calendar = RE::Calendar::GetSingleton()) {
+                updated.recoveryLastGameDay = calendar->GetDaysPassed();
+            }
+        }
+
+        const auto index = static_cast<std::size_t>(a_type);
+        if (index >= updated.injuryCounts.size()) return;
+        if (index < 4 && std::accumulate(updated.injuryCounts.begin(), updated.injuryCounts.begin() + 4, 0u) == 0) {
+            if (auto* calendar = RE::Calendar::GetSingleton()) updated.recoveryLastGameDay = calendar->GetDaysPassed();
+            updated.recoveryProgressDays = 0.0f;
+        }
+        const auto total = std::accumulate(updated.injuryCounts.begin(), updated.injuryCounts.end(), 0u);
+        if (total >= 12 || updated.injuryCounts[index] >= 10) return;
+        ++updated.injuryCounts[index];
+        updated.injuryLevel = GetInjuryLevel(updated.injuryCounts);
+        const InjuryLevel newLevel = updated.injuryLevel;
+        if (trace) trace->info("Wound record prepared: actor={:08X}, previousLevel={}, newLevel={}, totalWounds={}",
+            formID, static_cast<int>(oldLevel), static_cast<int>(newLevel), total + 1);
+        if (trace) trace->info("Updating tracker and publishing injury visuals: actor={:08X}.", formID);
+        tracker.AddOrUpdateInjured(updated);
+        if (trace) trace->info("Tracker update and visual publication returned: actor={:08X}.", formID);
+
+        auto* tasks = SKSE::GetTaskInterface();
+        const auto handle = a_actor->GetHandle();
+        const auto capturedFormID = formID;
+        const auto name = updated.name;
+        if (tasks) {
+            if (trace) trace->info("Scheduling wound gameplay effects: actor={:08X}.", formID);
+            tasks->AddTask([handle, capturedFormID, oldLevel, newLevel, name, a_type]() {
+                auto taskTrace = spdlog::get("LifeAgainTreatment");
+                if (taskTrace) taskTrace->info("Wound gameplay task started: actor={:08X}.", capturedFormID);
+                auto actorPtr = handle.get();
+                auto* actor = actorPtr ? actorPtr.get() : nullptr;
+                if (!actor || actor->IsDead()) {
+                    if (taskTrace) taskTrace->error("Wound gameplay task aborted: actor handle invalid or actor dead; actor={:08X}.", capturedFormID);
+                    return;
+                }
+
+                if (oldLevel != newLevel) {
+                    auto currentRecord = FollowerTracker::GetSingleton().GetInjured(capturedFormID);
+                    if (currentRecord) {
+                        auto copy = *currentRecord;
+                        if (taskTrace) taskTrace->info("Applying injury debuffs: actor={:08X}.", capturedFormID);
+                        ApplyInjuryDebuffs(actor, oldLevel, newLevel, &copy);
+                        if (taskTrace) taskTrace->info("Injury debuffs applied: actor={:08X}.", capturedFormID);
+                        const float savedSpeed = copy.savedSpeedBase;
+                        FollowerTracker::GetSingleton().UpdateInjured(capturedFormID, [savedSpeed](InjuredFollower& record) {
+                            record.savedSpeedBase = savedSpeed;
+                        });
+                    }
+                }
+
+                if (auto* base = actor->GetActorBase(); base && base->GetSex() == 1) RE::PlaySound("NPCHumanFemaleGroan");
+                else RE::PlaySound("NPCHumanMaleGroan");
+                if (taskTrace) taskTrace->info("Playing wound reaction and requesting IdleWounded: actor={:08X}.", capturedFormID);
+                actor->NotifyAnimationGraph("IdleWounded");
+                const auto msg = fmt::format("{} suffered {}.", name, kInjuryTypeNames[static_cast<std::size_t>(a_type)]);
+                if (g_Settings.ShowInjuryNotification) RE::DebugNotification(msg.c_str());
+                if (g_Settings.ShowInjuryMessageBox) RE::DebugMessageBox(msg.c_str());
+                // Life Again never purchases medicine. If the follower already has
+                // enough potions, use those; otherwise wait for inventory changes
+                // (for example, after Follower Unbound supplies the potions).
+                auto injury = FollowerTracker::GetSingleton().GetInjured(capturedFormID);
+                if (injury) CheckPotionHealing(actor, &*injury);
+                if (taskTrace) taskTrace->info("Wound gameplay task completed: actor={:08X}.", capturedFormID);
+            });
+        } else if (trace) {
+            trace->error("Could not schedule wound gameplay task: SKSE task interface unavailable; actor={:08X}.", formID);
+        }
+    }
+
+    class HitEventSink : public RE::BSTEventSink<RE::TESHitEvent> {
+    public:
+        static HitEventSink* GetSingleton() { static HitEventSink instance; return &instance; }
+
+        RE::BSEventNotifyControl ProcessEvent(const RE::TESHitEvent* event, RE::BSTEventSource<RE::TESHitEvent>*) override
+        {
+            if (!event || !event->target || !event->cause) return RE::BSEventNotifyControl::kContinue;
+            auto* actor = event->target->As<RE::Actor>();
+            auto* aggressor = event->cause->As<RE::Actor>();
+            if (!actor || !aggressor || aggressor == actor || !IsInjuryEligibleFollower(actor) || actor->IsDead()) return RE::BSEventNotifyControl::kContinue;
+
+            const auto now = std::chrono::steady_clock::now();
+            {
+                std::scoped_lock lock(g_hitMutex);
+                const auto it = g_lastHitTime.find(actor->GetFormID());
+                if (it != g_lastHitTime.end() && now - it->second < std::chrono::seconds(30)) return RE::BSEventNotifyControl::kContinue;
+                g_lastHitTime[actor->GetFormID()] = now;
+            }
+
+            static std::mt19937 rng{ std::random_device{}() };
+            std::scoped_lock rngLock(g_rngMutex);
+            std::uniform_int_distribution<int> roll(1, 100);
+            InjuryLevel severity = InjuryLevel::None;
+            if (roll(rng) <= std::clamp(g_Settings.HeavyInjuryChance, 0, 100)) {
+                severity = InjuryLevel::Heavy;
+            } else if (roll(rng) <= std::clamp(g_Settings.LightInjuryChance, 0, 100)) {
+                severity = InjuryLevel::Light;
+            }
+            if (severity == InjuryLevel::None) return RE::BSEventNotifyControl::kContinue;
+
+            const int firstType = severity == InjuryLevel::Light ? 0 : 4;
+            std::uniform_int_distribution<int> typeRoll(firstType, firstType + 3);
+            RecordBattleWound(actor, static_cast<InjuryType>(typeRoll(rng)));
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
+    private:
+        std::mutex g_hitMutex;
+        std::unordered_map<RE::FormID, std::chrono::steady_clock::time_point> g_lastHitTime;
+        std::mutex g_rngMutex;
     };
 
     // ---- Bleedout (Yere Düşme) Ölüm Şansı Dinleyicisi ----
@@ -847,8 +1121,7 @@ namespace LifeAgain {
             static std::mt19937 rng{ std::random_device{}() };
             std::uniform_int_distribution<int> dist(1, 100);
 
-            // Ölüm şansı 0 ise ölüm zarı hiç atılmaz (vanilla kurallar);
-            // yaralanma zarı aşağıdaki dalda yine atılır.
+            // Injury chance is handled on hit events; bleedout only governs death risk.
             bool died = chance > 0 && dist(rng) <= chance;
             if (died) {
                 spdlog::info("LifeAgain: Bleedout olum sansi tetiklendi ({}/100) -> {}", chance, actor->GetDisplayFullName());
@@ -884,87 +1157,6 @@ namespace LifeAgain {
                         a->NotifyAnimationGraph("Ragdoll");
                     });
                 }
-            } else {
-                // Ölmedi, yaralanma ihtimalini kontrol et
-                std::uniform_int_distribution<int> injDist(1, 100);
-                if (injDist(rng) <= g_Settings.InjuryChance) {
-                    InjuredFollower newInf;
-                    InjuryLevel oldLevel = InjuryLevel::None;
-
-                    // lastBleedoutDay güncelle
-                    auto* cal = RE::Calendar::GetSingleton();
-                    float currentDay = cal ? cal->GetDaysPassed() : 0.0f;
-
-                    if (inf) {
-                        newInf = *inf; // Kopyala
-                        oldLevel = inf->injuryLevel;
-                        newInf.lastBleedoutDay = currentDay;
-                        if (inf->injuryLevel == InjuryLevel::Light) {
-                            newInf.bleedoutCount++;
-                            if (newInf.bleedoutCount >= 3) {
-                                newInf.injuryLevel = InjuryLevel::Heavy;
-                            }
-                        }
-                    } else {
-                        newInf.formID = formID;
-                        newInf.name = actor->GetDisplayFullName();
-                        newInf.level = actor->GetLevel();
-                        newInf.kind = DetectKind(actor);
-                        newInf.injuryLevel = InjuryLevel::Light;
-                        newInf.bleedoutCount = 0;
-                        newInf.injuryStartDay = currentDay;
-                        newInf.lastBleedoutDay = currentDay;
-                    }
-
-                    tracker->AddOrUpdateInjured(newInf);
-
-                    // ModActorValue / PlaySound / NotifyAnimationGraph çağrılarını
-                    // bleedout event handler'ından DOĞRUDAN yapmak yerine AddTask'a taşı.
-                    // Bu sayede SKSE overlay task'larıyla (skee64, DynamicArmorVariants) çakışmaz.
-                    auto handle = actor->GetHandle();
-                    InjuryLevel capturedOld = oldLevel;
-                    InjuryLevel capturedNew = newInf.injuryLevel;
-                    bool isFemale = false;
-                    if (auto* base = actor->GetActorBase()) {
-                        isFemale = (base->GetSex() == 1);
-                    }
-
-                    if (auto* taskInterface = SKSE::GetTaskInterface()) {
-                        RE::FormID capturedFormID = formID;
-                        taskInterface->AddTask([handle, capturedOld, capturedNew, isFemale, capturedFormID]() {
-                            auto actorPtr = handle.get();
-                            if (!actorPtr) return;
-                            auto* a = actorPtr.get();
-                            if (!a || a->IsDead()) return;
-
-                            if (capturedOld != capturedNew) {
-                                // Kopya üzerinden uygula; savedSpeedBase değişikliğini
-                                // mutex kilidi altında orijinal kayda geri yaz
-                                auto* tr = &FollowerTracker::GetSingleton();
-                                auto infOpt = tr->GetInjured(capturedFormID);
-                                if (infOpt) {
-                                    InjuredFollower infCopy = *infOpt;
-                                    ApplyInjuryDebuffs(a, capturedOld, capturedNew, &infCopy);
-                                    const float savedSpeed = infCopy.savedSpeedBase;
-                                    tr->UpdateInjured(capturedFormID, [savedSpeed](InjuredFollower& rec) {
-                                        rec.savedSpeedBase = savedSpeed;
-                                    });
-                                } else {
-                                    ApplyInjuryDebuffs(a, capturedOld, capturedNew, nullptr);
-                                }
-                            } else {
-                                // Ayni seviyede kalsa bile bandaj takilmamis olabilir (eski save)
-                                EquipBandage(a);
-                                // Inleme sesi
-                                if (isFemale) {
-                                    RE::PlaySound("NPCHumanFemaleGroan");
-                                } else {
-                                    RE::PlaySound("NPCHumanMaleGroan");
-                                }
-                            }
-                        });
-                    }
-                }
             }
 
             return RE::BSEventNotifyControl::kContinue;
@@ -973,6 +1165,8 @@ namespace LifeAgain {
 
     inline void CheckPotionHealing(RE::Actor* actor, InjuredFollower* inf) {
         if (!actor || actor->IsDead() || !inf) return;
+        auto trace = spdlog::get("LifeAgainTreatment");
+        if (trace) trace->info("Potion treatment check: actor={:08X} ({})", actor->GetFormID(), actor->GetDisplayFullName());
 
         static const RE::FormID cureDiseaseFormID = 0x000AE723;
         // LookupByID<T> -> As<T>() lib'de bulunmuyor; raw lookup + formType kontrolü kullan
@@ -993,53 +1187,60 @@ namespace LifeAgain {
                 }
             }
         }
-        int needed = (inf->injuryLevel == InjuryLevel::Heavy) ? g_Settings.PotionRequirementHeavy : g_Settings.PotionRequirementLight;
-
-        if (potionCount >= needed) {
-            actor->RemoveItem(potionForm, needed, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-            // InjuredFollower* overload: savedSpeedBase'e gore hizi tam olarak geri yukler + animasyonu sifirlar
-            RemoveInjuryDebuffs(actor, inf);
-            
-            std::string name = inf->name;
-            InjuryLevel level = inf->injuryLevel;
-            
-            FollowerTracker::GetSingleton().RemoveInjured(inf->formID);
-
-            std::string msg;
-            if (level == InjuryLevel::Light) {
-                msg = fmt::format("{} used {} Cure Disease Potions and healed their light injury! ({} {} ilac kullanarak hafif yarasini iyilestirdi!)", name, needed, name, needed);
-            } else {
-                msg = fmt::format("{} used {} Cure Disease Potions and healed their heavy injury! ({} {} ilac kullanarak agir yarasini iyilestirdi!)", name, needed, name, needed);
-            }
-            RE::DebugNotification(msg.c_str());
-            spdlog::info("LifeAgain: {} healed via potion.", name);
+        const auto woundTotal = std::accumulate(inf->injuryCounts.begin(), inf->injuryCounts.end(), 0u);
+        if (woundTotal == 0) return;
+        if (trace) trace->info("Potion treatment inventory: actor={:08X} carried={}, wounds={}", actor->GetFormID(), potionCount, woundTotal);
+        if (potionCount < 1) {
+            if (trace) trace->info("Potion treatment deferred: actor={:08X} has no Cure Disease Potions.", actor->GetFormID());
+            return;
         }
-    }
 
-    inline void CheckNaturalHealing() {
-        auto* cal = RE::Calendar::GetSingleton();
-        if (!cal) return;
-        float today = cal->GetDaysPassed();
+        if (trace) trace->info("Calling Actor::DrinkPotion for one-dose partial treatment of actor={:08X}.", actor->GetFormID());
+        if (!actor->DrinkPotion(potionForm, nullptr)) {
+            if (trace) trace->error("Actor::DrinkPotion failed for actor={:08X}; wounds retained.", actor->GetFormID());
+            return;
+        }
+
+        // Pick one wound instance uniformly, so types with multiple wounds have
+        // proportionally higher odds while every individual wound is equally likely.
+        static std::mt19937 rng{ std::random_device{}() };
+        std::uniform_int_distribution<std::uint32_t> woundRoll(0, woundTotal - 1);
+        auto roll = woundRoll(rng);
+        std::size_t healedType = 0;
+        for (; healedType < inf->injuryCounts.size(); ++healedType) {
+            const auto count = inf->injuryCounts[healedType];
+            if (roll < count) break;
+            roll -= count;
+        }
+        if (healedType >= inf->injuryCounts.size() || inf->injuryCounts[healedType] == 0) {
+            if (trace) trace->error("Random wound selection failed for actor={:08X}; potion was consumed, injury record retained.", actor->GetFormID());
+            return;
+        }
+
+        const auto oldLevel = inf->injuryLevel;
+        auto updated = *inf;
+        --updated.injuryCounts[healedType];
+        updated.injuryLevel = GetInjuryLevel(updated.injuryCounts);
+        if (trace) trace->info("Potion healed one random wound: actor={:08X}, type={}, remainingWounds={}, level={}->{}.",
+            actor->GetFormID(), kInjuryTypeNames[healedType], woundTotal - 1,
+            static_cast<int>(oldLevel), static_cast<int>(updated.injuryLevel));
 
         auto& tracker = FollowerTracker::GetSingleton();
-        auto injured = tracker.GetInjuredFollowers();
-
-        for (auto& inf : injured) {
-            if (inf.injuryLevel != InjuryLevel::Light) continue;
-
-            float daysSinceBleedout = today - inf.lastBleedoutDay;
-            if (daysSinceBleedout >= 3.0f) {
-                auto* actor = RE::TESForm::LookupByID<RE::Actor>(inf.formID);
-                if (actor && !actor->IsDead()) {
-                    RemoveInjuryDebuffs(actor, &inf);  // savedSpeedBase ile tam restore + animasyon sifirla
-                    
-                    std::string msg = fmt::format("{} has recovered naturally. ({} sagligina kavustu.)", inf.name, inf.name);
-                    RE::DebugNotification(msg.c_str());
-                    spdlog::info("LifeAgain: {} naturally healed after {:.1f} days.", inf.name, daysSinceBleedout);
-                }
-                tracker.RemoveInjured(inf.formID); // Even if actor is unloaded, remove from list
+        if (updated.injuryLevel == InjuryLevel::None) {
+            RemoveInjuryDebuffs(actor, inf);
+            tracker.RemoveInjured(inf->formID);
+        } else {
+            if (updated.injuryLevel != oldLevel) {
+                ApplyInjuryDebuffs(actor, oldLevel, updated.injuryLevel);
             }
+            tracker.AddOrUpdateInjured(updated);
         }
+
+        const auto message = fmt::format("{} used a Cure Disease Potion to heal one wound: {}. ({} bir yarasını iyileştirdi.)",
+            inf->name, kInjuryTypeNames[healedType], inf->name);
+        RE::DebugNotification(message.c_str());
+        if (trace) trace->info("Potion partial treatment completed for actor={:08X}; remainingWounds={}.",
+            inf->formID, woundTotal - 1);
     }
 
     // ---- Container Changed Event (Iksir Kontrolu) ----
@@ -1074,45 +1275,14 @@ namespace LifeAgain {
         }
     };
 
-    // ---- Wait / Sleep Event (Zamanli Iyilesme) ----
-    class WaitStopEventSink : public RE::BSTEventSink<RE::TESWaitStopEvent> {
-    public:
-        static WaitStopEventSink* GetSingleton() { static WaitStopEventSink instance; return &instance; }
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESWaitStopEvent*, RE::BSTEventSource<RE::TESWaitStopEvent>*) override {
-            CheckNaturalHealing();
-            return RE::BSEventNotifyControl::kContinue;
-        }
-    };
-
-    class SleepStopEventSink : public RE::BSTEventSink<RE::TESSleepStopEvent> {
-    public:
-        static SleepStopEventSink* GetSingleton() { static SleepStopEventSink instance; return &instance; }
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESSleepStopEvent*, RE::BSTEventSource<RE::TESSleepStopEvent>*) override {
-            CheckNaturalHealing();
-            return RE::BSEventNotifyControl::kContinue;
-        }
-    };
-
-    class FastTravelEndEventSink : public RE::BSTEventSink<RE::TESFastTravelEndEvent> {
-    public:
-        static FastTravelEndEventSink* GetSingleton() { static FastTravelEndEventSink instance; return &instance; }
-        RE::BSEventNotifyControl ProcessEvent(const RE::TESFastTravelEndEvent*, RE::BSTEventSource<RE::TESFastTravelEndEvent>*) override {
-            CheckNaturalHealing();
-            return RE::BSEventNotifyControl::kContinue;
-        }
-    };
-
-
     inline void RegisterDeathEventSink() {
         auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
         if (holder) {
             holder->AddEventSink(DeathEventSink::GetSingleton());
             holder->AddEventSink(ActivateEventSink::GetSingleton());
             holder->AddEventSink(BleedoutEventSink::GetSingleton());
+            holder->AddEventSink(HitEventSink::GetSingleton());
             holder->AddEventSink(ContainerChangedEventSink::GetSingleton());
-            holder->AddEventSink(WaitStopEventSink::GetSingleton());
-            holder->AddEventSink(SleepStopEventSink::GetSingleton());
-            holder->AddEventSink(FastTravelEndEventSink::GetSingleton());
             spdlog::info("LifeAgain: Event Sinks registered successfully.");
         }
     }

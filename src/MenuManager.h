@@ -3,15 +3,22 @@
 #include <RE/I/InputEvent.h>
 #include <RE/B/ButtonEvent.h>
 #include <RE/P/PlayerCharacter.h>
+#include <RE/P/ProcessLists.h>
 #include <RE/T/TESBoundObject.h>
 #include <RE/B/BSInputDeviceManager.h>
 #include <SKSEMenuFramework.h>
 #include <spdlog/spdlog.h>
+#include <RE/I/InventoryEntryData.h>
+#include <RE/I/InventoryChanges.h>
+#include <RE/E/ExtraDataList.h>
+#include <RE/S/SoulLevels.h>
+#include <RE/F/FormTraits.h>  // TESForm::As<T> tanımı burada (TESForm.h yalnızca bildirimi içerir)
 #include "FollowerTracker.h"
 #include "Settings.h"
 #include <vector>
 #include <string>
 #include <mutex>
+#include <algorithm>
 
 namespace LifeAgain {
 
@@ -32,26 +39,42 @@ namespace LifeAgain {
         };
     }
 
-    inline bool GetAvailableSoulGem(RE::FormID& outFormID, int& outCount, std::string& outName) {
+    // Belirtilen formdaki DOLU ruh taşlarının sayısını döndürür.
+    // GetInventory() aynı formun bos/dolu kayıtlarını tek girdide birleştirdiği
+    // için InventoryChanges bağlı listesi doğrudan gezilir ve ExtraSoul kontrolü yapılır.
+    inline int CountFilledSoulGems(RE::FormID a_formID) {
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player) return false;
+        if (!player) return 0;
+        auto* form = RE::TESForm::LookupByID(a_formID);
+        if (!form) return 0;
+        auto* boundObj = static_cast<RE::TESBoundObject*>(form);
+        if (!boundObj) return 0;
 
-        auto inv = player->GetInventory();
+        int count = 0;
+        auto* invChanges = player->GetInventoryChanges();
+        if (!invChanges || !invChanges->entryList) return 0;
+        for (auto& entry : *invChanges->entryList) {
+            if (entry && entry->object == boundObj && entry->countDelta > 0 &&
+                entry->GetSoulLevel() != RE::SOUL_LEVEL::kNone) {
+                count += entry->countDelta;
+            }
+        }
+        return count;
+    }
+
+    inline bool GetAvailableSoulGem(RE::FormID& outFormID, int& outCount, std::string& outName) {
         for (const auto& gem : GetSoulGemHierarchy()) {
-            for (auto& [form, data] : inv) {
-                if (form && form->GetFormID() == gem.id) {
-                    if (data.first >= gem.requiredAmount) {
-                        outFormID = gem.id;
-                        outCount = gem.requiredAmount;
-                        outName = gem.name;
-                        return true;
-                    }
-                }
+            if (CountFilledSoulGems(gem.id) >= gem.requiredAmount) {
+                outFormID = gem.id;
+                outCount = gem.requiredAmount;
+                outName = gem.name;
+                return true;
             }
         }
         return false;
     }
 
+    // Yalnızca DOLU taşları düşer; boş taşlara dokunmaz.
     inline void RemoveSoulGem(RE::FormID formID, int count) {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return;
@@ -59,30 +82,111 @@ namespace LifeAgain {
         if (!form) return;
         auto* boundObj = static_cast<RE::TESBoundObject*>(form);
         if (!boundObj) return;
-        player->RemoveItem(boundObj, count, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+
+        // Envanter değişikliği liste girdilerini bozabileceği için önce snapshot al
+        struct FilledEntry { RE::ExtraDataList* extra; std::int32_t count; };
+        std::vector<FilledEntry> filled;
+        auto* invChanges = player->GetInventoryChanges();
+        if (!invChanges || !invChanges->entryList) return;
+        for (auto& entry : *invChanges->entryList) {
+            if (entry && entry->object == boundObj && entry->countDelta > 0 &&
+                entry->GetSoulLevel() != RE::SOUL_LEVEL::kNone) {
+                RE::ExtraDataList* extra = nullptr;
+                if (entry->extraLists) {
+                    for (auto& xList : *entry->extraLists) {
+                        if (xList && xList->GetSoulLevel() != RE::SOUL_LEVEL::kNone) {
+                            extra = xList;
+                            break;
+                        }
+                    }
+                }
+                filled.push_back({ extra, entry->countDelta });
+            }
+        }
+
+        int remaining = count;
+        for (const auto& e : filled) {
+            if (remaining <= 0) break;
+            // windows.h min makrosuyla çakışmasın diye üçlü operatör
+            const int take = remaining < static_cast<int>(e.count) ? remaining : static_cast<int>(e.count);
+            player->RemoveItem(boundObj, take, RE::ITEM_REMOVE_REASON::kRemove, e.extra, nullptr);
+            remaining -= take;
+        }
     }
 
     inline SKSEMenuFramework::Model::WindowInterface* g_Window = nullptr;
 
-    inline int GetPlayerGold() {
+    inline int GetPlayerCurePotionCount() {
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return 0;
-        auto* goldForm = static_cast<RE::TESBoundObject*>(RE::TESForm::LookupByID(0x0000000F));
-        if (!goldForm) return 0;
-        return player->GetItemCount(goldForm);
+        auto* potion = RE::TESForm::LookupByID(0x000AE723);
+        if (!potion || potion->GetFormType() != RE::FormType::AlchemyItem) return 0;
+        return player->GetItemCount(static_cast<RE::TESBoundObject*>(potion));
     }
 
-    inline void RemovePlayerGold(int amount) {
+    inline int GetPlayerGold() {
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player) return;
-        auto* goldForm = static_cast<RE::TESBoundObject*>(RE::TESForm::LookupByID(0x0000000F));
-        if (!goldForm) return;
-        player->RemoveItem(goldForm, amount, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+        auto* gold = static_cast<RE::TESBoundObject*>(RE::TESForm::LookupByID(0x0000000F));
+        return player && gold ? player->GetItemCount(gold) : 0;
     }
 
-    inline void ReviveFollower(RE::FormID formID) {
+    inline bool RemovePlayerGold(int amount) {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* gold = static_cast<RE::TESBoundObject*>(RE::TESForm::LookupByID(0x0000000F));
+        if (!player || !gold || player->GetItemCount(gold) < amount) return false;
+        player->RemoveItem(gold, amount, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+        return true;
+    }
+
+    inline int GetActorGold(RE::Actor* actor) {
+        return GetSafeActorGoldCount(actor);
+    }
+
+    inline bool RemoveActorGold(RE::Actor* actor, int amount) {
+        auto* gold = static_cast<RE::TESBoundObject*>(RE::TESForm::LookupByID(0x0000000F));
+        if (!actor || !gold || GetSafeActorGoldCount(actor) < amount) return false;
+        actor->RemoveItem(gold, amount, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+        return true;
+    }
+
+    inline bool RemovePlayerCurePotions(int amount) {
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* potion = RE::TESForm::LookupByID(0x000AE723);
+        if (!player || !potion || potion->GetFormType() != RE::FormType::AlchemyItem) return false;
+        auto* bound = static_cast<RE::TESBoundObject*>(potion);
+        if (player->GetItemCount(bound) < amount) return false;
+        player->RemoveItem(bound, amount, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+        return true;
+    }
+
+    inline std::string DescribeWounds(const InjuredFollower& follower) {
+        std::string result;
+        for (std::size_t i = 0; i < follower.injuryCounts.size(); ++i) {
+            if (!follower.injuryCounts[i]) continue;
+            // Separate wound types so narrow menu columns cannot hide later wounds.
+            if (!result.empty()) result += "\n";
+            result += std::to_string(follower.injuryCounts[i]) + " x " + kInjuryTypeNames[i];
+        }
+        return result.empty() ? "None" : result;
+    }
+
+    inline std::string NaturalHealingStatus(const InjuredFollower& follower) {
+        const auto lightWounds = std::accumulate(follower.injuryCounts.begin(), follower.injuryCounts.begin() + 4, 0u);
+        if (lightWounds == 0) return "No light wounds (Hafif yara yok)";
+
+        constexpr float recoveryDaysPerLightWound = 3.0f;
+        float progressDays = follower.recoveryProgressDays;
+        if (auto* calendar = RE::Calendar::GetSingleton(); calendar && follower.recoveryLastGameDay >= 0.0f) {
+            progressDays += std::max(0.0f, calendar->GetDaysPassed() - follower.recoveryLastGameDay);
+        }
+        progressDays = std::fmod(std::max(0.0f, progressDays), recoveryDaysPerLightWound);
+        const float remainingDays = recoveryDaysPerLightWound - progressDays;
+        return fmt::format("Next light wound: {:.1f} game days (Sonraki hafif yara: {:.1f} oyun gunu)", remainingDays, remainingDays);
+    }
+
+    inline bool ReviveFollower(RE::FormID formID) {
         auto* actor = RE::TESForm::LookupByID<RE::Actor>(formID);
-        if (!actor) return;
+        if (!actor) return false;
         if (actor->IsDead()) {
             actor->Resurrect(false, false);
         }
@@ -95,15 +199,16 @@ namespace LifeAgain {
         // KillImmediate + Resurrect sonrasi ModActorValue degerleri bazen geri gelmez,
         // guvenli olarak her iki seviye icin de ters duzeltme uygula.
         auto* tracker = &FollowerTracker::GetSingleton();
-        InjuredFollower* inf = tracker->GetInjured(formID);
+        auto inf = tracker->GetInjured(formID);
         if (inf) {
             // savedSpeedBase ile tam restore + IdleWoundedStop animasyon sifirlama
-            RemoveInjuryDebuffs(actor, inf);
+            RemoveInjuryDebuffs(actor, &*inf);
             tracker->RemoveInjured(formID);
         }
 
         FollowerTracker::GetSingleton().AddReviveCount(formID);
         spdlog::info("LifeAgain: {} hayata donduruldu", actor->GetDisplayFullName());
+        return true;
     }
 
 
@@ -123,16 +228,30 @@ namespace LifeAgain {
         int  selectedInjuredIndex = -1;
         bool confirmVisible  = false;
         bool confirmHealVisible = false;
+        bool confirmHealWithGold = false;
         int  confirmCost     = 0;
         int  confirmHealCost = 0;
+        RE::FormID selectedTestActor = 0;
+        int selectedTestInjury = 0;
+        int testItemAmount = 1;
+        int testNpcGoldAmount = 500;
+    };
+
+    struct TestFollowerSnapshot {
+        RE::FormID formID = 0;
+        std::string name;
+        int level = 1;
+        std::optional<InjuredFollower> injury;
     };
 
     inline MenuState  g_MenuState;
     inline std::mutex g_MenuMutex;
+    inline std::mutex g_TestFollowerMutex;
+    inline std::vector<TestFollowerSnapshot> g_TestFollowers;
+    inline std::atomic<bool> g_TestRefreshPending{ false };
 
     inline void RefreshList() {
         std::lock_guard lock(g_MenuMutex);
-        CheckNaturalHealing(); // Zamanli dogal iyilesmeleri kontrol et
         
         auto newList = FollowerTracker::GetSingleton().GetDeadFollowers();
         auto rawInjuredList = FollowerTracker::GetSingleton().GetInjuredFollowers();
@@ -201,6 +320,176 @@ namespace LifeAgain {
         TextColored(col, "%s", buf);
     }
 
+    inline std::vector<TestFollowerSnapshot> GetTestFollowerSnapshot()
+    {
+        std::lock_guard lock(g_TestFollowerMutex);
+        return g_TestFollowers;
+    }
+
+    inline void RequestTestFollowerRefresh()
+    {
+        bool expected = false;
+        if (!g_TestRefreshPending.compare_exchange_strong(expected, true)) return;
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {
+            g_TestRefreshPending = false;
+            return;
+        }
+        tasks->AddTask([]() {
+            std::vector<std::pair<float, TestFollowerSnapshot>> candidates;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* lists = RE::ProcessLists::GetSingleton();
+            if (player && lists) {
+                lists->ForAllActors([&](RE::Actor& actor) {
+                    if (&actor == player || actor.IsDead() ||
+                        actor.GetParentCell() != player->GetParentCell() || !IsInjuryEligibleFollower(&actor)) {
+                        return RE::BSContainer::ForEachResult::kContinue;
+                    }
+                    const float distance = actor.GetPosition().GetDistance(player->GetPosition());
+                    if (distance > 2500.0f) return RE::BSContainer::ForEachResult::kContinue;
+                    TestFollowerSnapshot snapshot;
+                    snapshot.formID = actor.GetFormID();
+                    snapshot.name = actor.GetDisplayFullName();
+                    snapshot.level = actor.GetLevel();
+                    snapshot.injury = FollowerTracker::GetSingleton().GetInjured(snapshot.formID);
+                    candidates.push_back({ distance, std::move(snapshot) });
+                    return RE::BSContainer::ForEachResult::kContinue;
+                });
+            }
+            std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+                return left.first < right.first;
+            });
+            std::vector<TestFollowerSnapshot> refreshed;
+            const auto count = std::min<std::size_t>(candidates.size(), 30);
+            refreshed.reserve(count);
+            for (std::size_t i = 0; i < count; ++i) refreshed.push_back(std::move(candidates[i].second));
+            {
+                std::lock_guard lock(g_TestFollowerMutex);
+                g_TestFollowers = std::move(refreshed);
+            }
+            g_TestRefreshPending = false;
+        });
+    }
+
+    template <class Action>
+    inline void QueueTestFollowerAction(RE::FormID formID, Action action)
+    {
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) return;
+        tasks->AddTask([formID, action = std::move(action)]() mutable {
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(formID);
+            if (!IsInjuryEligibleFollower(actor) || actor->IsDead()) return;
+            action(actor);
+            RequestTestFollowerRefresh();
+        });
+    }
+
+    inline void __stdcall RenderInjuryTestMenu()
+    {
+        using namespace ImGuiMCP;
+        auto& state = g_MenuState;
+        static int lastRefreshFrame = -120;
+        const int frame = ImGuiMCP::GetFrameCount();
+        if (frame - lastRefreshFrame >= 120) {
+            RequestTestFollowerRefresh();
+            lastRefreshFrame = frame;
+        }
+        const auto followers = GetTestFollowerSnapshot();
+
+        TextColored4(1.0f, 0.85f, 0.3f, 1.0f, "--- INJURY TEST LAB (YARALANMA TESTI) ---");
+        Text("Only nearby active humanoid followers are listed. Test changes are saved with the current save.");
+        Text("Yalnizca yakindaki aktif insansi yoldaslar listelenir. Test degisiklikleri kayda yazilir.");
+        Spacing();
+
+        if (Button("  Refresh nearby followers (Yakin yoldaslari yenile)  ")) RequestTestFollowerRefresh();
+        if (followers.empty()) {
+            Text("No active humanoid followers found within 2500 units in this cell.");
+            return;
+        }
+
+        Text("Choose a follower (Yoldas secin):");
+        for (const auto& follower : followers) {
+            const std::string label = follower.name + "##test_" + std::to_string(follower.formID);
+            if (Selectable(label.c_str(), state.selectedTestActor == follower.formID)) state.selectedTestActor = follower.formID;
+        }
+        if (state.selectedTestActor == 0) return;
+        const auto selected = std::find_if(followers.begin(), followers.end(), [&](const auto& entry) {
+            return entry.formID == state.selectedTestActor;
+        });
+        if (selected == followers.end()) {
+            state.selectedTestActor = 0;
+            return;
+        }
+        Separator();
+        Text("Selected follower (Secili yoldas): %s | Level (Seviye): %d",
+            selected->name.c_str(), selected->level);
+        if (const auto& injury = selected->injury) {
+            Text("Injury (Yaralanma): %s | Potion cost: %d | Gold cost: %d",
+                injury->injuryLevel == InjuryLevel::Heavy ? "Heavy (Agir)" : "Light (Hafif)",
+                GetInjuryPotionCost(injury->injuryCounts), GetInjuryGoldCost(injury->injuryCounts));
+            Text("Wounds (Yaralar):");
+            TextWrapped("%s", DescribeWounds(*injury).c_str());
+        } else {
+            Text("Injury (Yaralanma): None");
+        }
+
+        if (SliderInt("Wound type (Yara turu)", &state.selectedTestInjury, 0, static_cast<int>(kInjuryTypeCount) - 1)) {}
+        Text("Selected wound: %s", kInjuryTypeNames[static_cast<std::size_t>(state.selectedTestInjury)]);
+        if (Button("  Apply selected wound (Secili yarayi uygula)  ")) {
+            const auto type = static_cast<InjuryType>(state.selectedTestInjury);
+            QueueTestFollowerAction(state.selectedTestActor, [type](RE::Actor* actor) {
+                RecordBattleWound(actor, type);
+            });
+        }
+
+        SliderInt("Cure potions to give (Verilecek iksir)", &state.testItemAmount, 1, 20);
+        if (Button("  Give Cure Disease Potion(s) (Yoldasa tedavi iksiri ver)  ")) {
+            const int amount = state.testItemAmount;
+            QueueTestFollowerAction(state.selectedTestActor, [amount](RE::Actor* actor) {
+                auto* potion = RE::TESForm::LookupByID(0x000AE723);
+                if (potion && potion->GetFormType() == RE::FormType::AlchemyItem)
+                    actor->AddObjectToContainer(static_cast<RE::TESBoundObject*>(potion), nullptr, amount, nullptr);
+            });
+        }
+        SliderInt("Gold to give (Verilecek altin)", &state.testNpcGoldAmount, 100, 10000);
+        if (Button("  Give gold to follower (Yoldasa altin ver)  ")) {
+            const int amount = state.testNpcGoldAmount;
+            QueueTestFollowerAction(state.selectedTestActor, [amount](RE::Actor* actor) {
+                auto* gold = static_cast<RE::TESBoundObject*>(RE::TESForm::LookupByID(0x0000000F));
+                if (gold) actor->AddObjectToContainer(gold, nullptr, amount, nullptr);
+            });
+        }
+
+        if (Button("  Test carried-potion treatment (NPC iksiriyle tedavi et)  ")) {
+            QueueTestFollowerAction(state.selectedTestActor, [](RE::Actor* actor) {
+                auto injury = FollowerTracker::GetSingleton().GetInjured(actor->GetFormID());
+                if (injury) CheckPotionHealing(actor, &*injury);
+            });
+        }
+        SameLine();
+        if (Button("  Test carried-gold treatment (NPC altiniyla tedavi et)  ")) {
+            QueueTestFollowerAction(state.selectedTestActor, [](RE::Actor* actor) {
+                auto& tracker = FollowerTracker::GetSingleton();
+                auto injury = tracker.GetInjured(actor->GetFormID());
+                if (!injury) return;
+                const int cost = GetInjuryGoldCost(injury->injuryCounts);
+                if (RemoveActorGold(actor, cost)) {
+                    RemoveInjuryDebuffs(actor, &*injury);
+                    tracker.RemoveInjured(actor->GetFormID());
+                }
+            });
+        }
+        if (Button("  Clear test injury for this NPC (Test yarasini temizle)  ")) {
+            QueueTestFollowerAction(state.selectedTestActor, [](RE::Actor* actor) {
+                auto& tracker = FollowerTracker::GetSingleton();
+                auto injury = tracker.GetInjured(actor->GetFormID());
+                if (!injury) return;
+                RemoveInjuryDebuffs(actor, &*injury);
+                tracker.RemoveInjured(actor->GetFormID());
+            });
+        }
+    }
+
     // ============ SKSE MENU FRAMEWORK ARAYÜZÜ ============
     inline void __stdcall RenderSettingsMenu() {
         using namespace ImGuiMCP;
@@ -221,12 +510,7 @@ namespace LifeAgain {
         Text("Per level: %d gold (Her 1 seviye basina: %d altin)", g_Settings.GoldMultiplier, g_Settings.GoldMultiplier);
         Spacing();
 
-        if (SliderInt("Light Injury Cost Multiplier (Hafif Yarali Tedavi Carpani)", &g_Settings.LightInjuryCostMultiplier, 10, 1000)) {
-            SaveSettings();
-        }
-        if (SliderInt("Heavy Injury Cost Multiplier (Agir Yarali Tedavi Carpani)", &g_Settings.HeavyInjuryCostMultiplier, 10, 1000)) {
-            SaveSettings();
-        }
+        Text("Wounds can be treated manually from the Healing menu or with Cure Disease Potions.");
         Spacing();
 
         if (SliderInt("Healthy Death Chance % (Normal Olme Sansi)", &g_Settings.BleedoutDeathChance_Healthy, 0, 100)) {
@@ -249,9 +533,17 @@ namespace LifeAgain {
         }
         Spacing();
         
-        if (SliderInt("Injury Chance % (Yaralanma Ihtimali)", &g_Settings.InjuryChance, 0, 100)) {
+        if (SliderInt("Light Injury Risk % (Hafif Yaralanma Riski)", &g_Settings.LightInjuryChance, 0, 100)) {
+            const int maxHeavyRisk = g_Settings.LightInjuryChance > 1 ? (g_Settings.LightInjuryChance - 1) / 2 : 0;
+            g_Settings.HeavyInjuryChance = std::min(g_Settings.HeavyInjuryChance, maxHeavyRisk);
             SaveSettings();
         }
+        const int maxHeavyRisk = g_Settings.LightInjuryChance > 1 ? (g_Settings.LightInjuryChance - 1) / 2 : 0;
+        if (SliderInt("Heavy Injury Risk % (Agir Yaralanma Riski)", &g_Settings.HeavyInjuryChance, 0, maxHeavyRisk)) {
+            SaveSettings();
+        }
+        Text("Defaults: light 5%%, heavy 1%%. Heavy risk is capped below half the light risk; one roll per follower every 30 seconds.");
+        Text("Varsayilan: hafif %%5, agir %%1. Agir risk hafif riskin yarisindan azdir; her takipci icin 30 saniyede bir kontrol edilir.");
         if (Checkbox("Show Injury Notification (Yaralanma Bildirimi Goster)", &g_Settings.ShowInjuryNotification)) {
             SaveSettings();
         }
@@ -266,12 +558,8 @@ namespace LifeAgain {
         Text("0 = Unlimited Revives (Sinirsiz Diriltme)");
         Spacing();
         
-        if (SliderInt("Light Injury Potion Cost (Hafif Yarali Iksir Maliyeti)", &g_Settings.PotionRequirementLight, 1, 20)) {
-            SaveSettings();
-        }
-        if (SliderInt("Heavy Injury Potion Cost (Agir Yarali Iksir Maliyeti)", &g_Settings.PotionRequirementHeavy, 1, 30)) {
-            SaveSettings();
-        }
+        Text("Manual full treatment: light = 1 potion or 100 gold; heavy = 3 potions or 250 gold.");
+        Text("Elle tam tedavi: hafif 1 iksir veya 100 altin; agir 3 iksir veya 250 altin.");
         Spacing();
         
         if (Button("  Save Settings (Ayarlari Kaydet)  ")) {
@@ -418,13 +706,30 @@ namespace LifeAgain {
                         if (confirmed && canAfford) {
                             RE::FormID fid = sel.formID;
                             int c = state.confirmCost;
-                            SKSE::GetTaskInterface()->AddTask([fid, c, requireGold, requireSoulGem, bestGemId, bestGemCount]() {
-                                if (requireGold) RemovePlayerGold(c);
-                                if (requireSoulGem) RemoveSoulGem(bestGemId, bestGemCount);
-                                ReviveFollower(fid);
-                            });
-                            FollowerTracker::GetSingleton().Remove(fid);
-                            RefreshList();
+                            auto* tasks = SKSE::GetTaskInterface();
+                            if (tasks) {
+                                tasks->AddTask([fid, c, requireGold, requireSoulGem, bestGemId, bestGemCount]() {
+                                    auto* actor = RE::TESForm::LookupByID<RE::Actor>(fid);
+                                    auto& tracker = FollowerTracker::GetSingleton();
+                                    const auto reviveCount = tracker.GetReviveCount(fid);
+                                    if (!actor || !actor->IsDead() ||
+                                        (g_Settings.MaxRevives > 0 && reviveCount >= g_Settings.MaxRevives) ||
+                                        (requireGold && GetPlayerGold() < c) ||
+                                        (requireSoulGem && CountFilledSoulGems(bestGemId) < bestGemCount)) {
+                                        return;
+                                    }
+
+                                    if (requireGold) RemovePlayerGold(c);
+                                    if (requireSoulGem) RemoveSoulGem(bestGemId, bestGemCount);
+                                    if (ReviveFollower(fid)) {
+                                        tracker.Remove(fid);
+                                    }
+                                });
+                                state.confirmVisible = false;
+                                RefreshList();
+                            } else {
+                                spdlog::error("LifeAgain: SKSE task interface unavailable; revive cancelled.");
+                            }
                         }
                         SameLine();
                         if (Button("  Cancel (Vazgec)  ")) {
@@ -473,11 +778,12 @@ namespace LifeAgain {
                     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                     ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp;
 
-                if (BeginTable("##InjuredTable", 4, tableFlags, ImVec2{0.0f, 200.0f})) {
+                if (BeginTable("##InjuredTable", 5, tableFlags, ImVec2{0.0f, 200.0f})) {
                     TableSetupColumn("Type (Tur)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
                     TableSetupColumn("Name (Ad)", ImGuiTableColumnFlags_WidthStretch, 0.0f);
                     TableSetupColumn("Level (Seviye)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
                     TableSetupColumn("Injury (Durum)", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+                    TableSetupColumn("Next heal (Sonraki iyilesme)", ImGuiTableColumnFlags_WidthFixed, 180.0f);
                     TableHeadersRow();
 
                     for (int i = 0; i < (int)state.injuredList.size(); ++i) {
@@ -494,9 +800,9 @@ namespace LifeAgain {
                         if (Selectable(selId, selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
                             state.selectedInjuredIndex = i;
                             state.confirmHealVisible = false;
+                            state.confirmHealWithGold = false;
                             
-                            int mult = (inf.injuryLevel == InjuryLevel::Heavy) ? g_Settings.HeavyInjuryCostMultiplier : g_Settings.LightInjuryCostMultiplier;
-                            state.confirmHealCost = inf.level * mult;
+                            state.confirmHealCost = GetInjuryPotionCost(inf.injuryCounts);
                         }
                         TableSetColumnIndex(2); Text("%d", inf.level);
                         TableSetColumnIndex(3); 
@@ -505,6 +811,8 @@ namespace LifeAgain {
                         } else {
                             TextColored4(1.0f, 0.7f, 0.3f, 1.0f, "Light (Hafif)");
                         }
+                        TableSetColumnIndex(4);
+                        TextWrapped("%s", NaturalHealingStatus(inf).c_str());
                     }
                     EndTable();
                 }
@@ -515,22 +823,37 @@ namespace LifeAgain {
                     int cost = state.confirmHealCost;
 
                     Separator();
+                    const int goldCost = GetInjuryGoldCost(sel.injuryCounts);
                     TextColored4(1.0f, 0.9f, 0.5f, 1.0f,
-                        "Selected (Secili): %s  |  Level (Seviye): %d  |  Cost (Maliyet): %d Gold",
-                        sel.name.c_str(), sel.level, cost);
+                        "Selected (Secili): %s | Potions (Iksir): %d | Gold (Altin): %d",
+                        sel.name.c_str(), cost, goldCost);
+                    Text("Wounds (Yaralar):");
+                    TextWrapped("%s", DescribeWounds(sel).c_str());
+                    TextWrapped("%s", NaturalHealingStatus(sel).c_str());
                     Spacing();
 
                     if (!state.confirmHealVisible) {
-                        if (Button("  Heal (Tedavi Et)  ")) {
+                        if (Button("  Heal with Potions (Iksirle Tedavi)  ")) {
                             state.confirmHealVisible = true;
+                            state.confirmHealWithGold = false;
                             state.confirmHealCost = cost;
                         }
+                        SameLine();
+                        if (Button("  Heal with Gold (Altinla Tedavi)  ")) {
+                            state.confirmHealVisible = true;
+                            state.confirmHealWithGold = true;
+                            state.confirmHealCost = goldCost;
+                        }
                     } else {
-                        int playerGold = GetPlayerGold();
-                        bool canAfford = (playerGold >= state.confirmHealCost);
+                        const bool useGold = state.confirmHealWithGold;
+                        const int available = useGold ? GetPlayerGold() : GetPlayerCurePotionCount();
+                        bool canAfford = (available >= state.confirmHealCost);
 
-                        TextColored4(1.0f, 0.5f, 0.3f, 1.0f, "It will cost %d Gold for %s. Are you sure? (Emin misiniz?)", state.confirmHealCost, sel.name.c_str());
-                        Text("Current Gold (Mevcut Altin): %d", playerGold);
+                        TextColored4(1.0f, 0.5f, 0.3f, 1.0f,
+                            useGold ? "Pay %d Gold to heal %s? (Altinla tedavi edilsin mi?)" : "Use %d Cure Disease Potion(s) to heal %s? (Iksirle tedavi edilsin mi?)",
+                            state.confirmHealCost, sel.name.c_str());
+                        Text("Available (Mevcut): %d | Gold cost (Altin bedeli): %d",
+                            available, goldCost);
                         Spacing();
 
                         if (!canAfford) {
@@ -543,25 +866,27 @@ namespace LifeAgain {
                         if (!canAfford) {
                             PopStyleColor(2);
                             SameLine();
-                            TextColored4(1.0f, 0.3f, 0.3f, 1.0f, "Not enough gold! (Yeterli altin yok!)");
+                            TextColored4(1.0f, 0.3f, 0.3f, 1.0f,
+                                useGold ? "Not enough gold! (Yeterli altin yok!)" : "Not enough Cure Disease Potions! (Yeterli tedavi iksiri yok!)");
                         }
 
                         if (confirmed && canAfford) {
                             RE::FormID fid = sel.formID;
                             int c = state.confirmHealCost;
-                            SKSE::GetTaskInterface()->AddTask([fid, c]() {
-                                RemovePlayerGold(c);
+                            const bool payGold = useGold;
+                            auto* tasks = SKSE::GetTaskInterface();
+                            if (tasks) tasks->AddTask([fid, c, payGold]() {
                                 auto* actor = RE::TESForm::LookupByID<RE::Actor>(fid);
-                                if (actor) {
-                                    auto* tracker = &FollowerTracker::GetSingleton();
-                                    InjuredFollower* inf = tracker->GetInjured(fid);
-                                    if (inf) {
-                                        // savedSpeedBase + IdleWoundedStop ile tam iyilesme
-                                        RemoveInjuryDebuffs(actor, inf);
-                                    }
-                                    tracker->RemoveInjured(fid);
-                                }
+                                auto* tracker = &FollowerTracker::GetSingleton();
+                                auto inf = tracker->GetInjured(fid);
+                                if (!actor || !inf) return;
+                                const int currentCost = payGold ? GetInjuryGoldCost(inf->injuryCounts) : GetInjuryPotionCost(inf->injuryCounts);
+                                if (currentCost != c) return;
+                                if (payGold ? !RemovePlayerGold(c) : !RemovePlayerCurePotions(c)) return;
+                                RemoveInjuryDebuffs(actor, &*inf);
+                                tracker->RemoveInjured(fid);
                             });
+                            else spdlog::error("LifeAgain: SKSE task interface unavailable; healing cancelled.");
                             // Sekme ve secim durumunu hemen sifirla, asenkron temizlik bittikten sonra
                             // bir sonraki frame'de RefreshList otomatik cagrilacak
                             state.selectedInjuredIndex = -1;
@@ -591,8 +916,6 @@ namespace LifeAgain {
         }
 
         auto& state = g_MenuState;
-        auto* cal = RE::Calendar::GetSingleton();
-        float today = cal ? cal->GetDaysPassed() : 0.0f;
 
         TextColored4(1.0f, 0.85f, 0.3f, 1.0f, "=== FOLLOWER DASHBOARD (YOLDAS DURUM PANELI) ===");
         Spacing();
@@ -603,7 +926,7 @@ namespace LifeAgain {
         int totalHeavy   = 0;
         for (auto& inf : state.injuredList) {
             if (inf.injuryLevel == InjuryLevel::Light) totalLight++;
-            else                                        totalHeavy++;
+            else if (inf.injuryLevel == InjuryLevel::Heavy) totalHeavy++;
         }
 
         TextColored4(0.4f, 1.0f, 0.4f, 1.0f, "Healthy (Saglikli): Unknown");
@@ -630,8 +953,8 @@ namespace LifeAgain {
                 TableSetColumnIndex(1); Text("Type (Tur)");
                 TableSetColumnIndex(2); Text("Lvl");
                 TableSetColumnIndex(3); Text("Status (Durum)");
-                TableSetColumnIndex(4); Text("Bleedouts");
-                TableSetColumnIndex(5); Text("Heals In (Iyilesme)");
+                TableSetColumnIndex(4); Text("Wounds (Yaralar)");
+                TableSetColumnIndex(5); Text("Potions (Iksir)");
                 Separator();
 
                 for (auto& inf : state.injuredList) {
@@ -657,22 +980,11 @@ namespace LifeAgain {
                         TextColored4(1.0f, 0.35f, 0.2f, 1.0f, "Heavy (Agir)");
                     }
 
-                    // Bleedout sayisi
                     TableSetColumnIndex(4);
-                    Text("%d", inf.bleedoutCount);
+                    TextWrapped("%s", DescribeWounds(inf).c_str());
 
-                    // Dogal iyilesme suresi
                     TableSetColumnIndex(5);
-                    if (inf.injuryLevel == InjuryLevel::Heavy) {
-                        TextColored4(0.7f, 0.4f, 0.4f, 1.0f, "Temple only");
-                    } else {
-                        float daysLeft = 3.0f - (today - inf.lastBleedoutDay);
-                        if (daysLeft <= 0.0f) {
-                            TextColored4(0.4f, 1.0f, 0.4f, 1.0f, "Recovering...");
-                        } else {
-                            Text("%.1f day(s) (gun)", daysLeft);
-                        }
-                    }
+                    Text("%d", GetInjuryPotionCost(inf.injuryCounts));
                 }
                 EndTable();
             }
@@ -738,6 +1050,7 @@ namespace LifeAgain {
         SKSEMenuFramework::AddSectionItem("Revival (Diriltme)", RenderRevivalMenu);
         SKSEMenuFramework::AddSectionItem("Healing (Iyilesme)", RenderHealingMenu);
         SKSEMenuFramework::AddSectionItem("Dashboard (Pano)", RenderDashboard);
+        SKSEMenuFramework::AddSectionItem("Injury Test Lab (Yaralanma Testi)", RenderInjuryTestMenu);
 
         spdlog::info("LifeAgain: SKSE Menu - Settings + Revival + Healing + Dashboard sekmeleri kayit edildi.");
     }

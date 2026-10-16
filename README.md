@@ -1,325 +1,138 @@
-# Life Again — SKSE Plugin
+# Life Again
 
-> **A Skyrim Special Edition / Anniversary Edition SKSE plugin that completely overhauls the follower death and injury system.**  
-> **Skyrim'deki yoldaş ölüm ve yaralanma sistemini kökten yenileyen bir SKSE eklentisi.**
+Life Again, Skyrim Special Edition / Anniversary Edition için SKSE eklentisidir. Aktif yoldaşların savaş sırasında yaralanmasını, yaraların tedavisini ve isteğe bağlı kalıcı ölüm/diriltme sistemini yönetir. Ana oyun sistemleri dışında kalan yara animasyonları ve görünür yara izi entegrasyonları isteğe bağlıdır.
 
----
+## İçindekiler
 
-## 📋 Requirements / Gereksinimler
+- [Gereksinimler](#gereksinimler)
+- [Kurulum](#kurulum)
+- [Yaralanma sistemi](#yaralanma-sistemi)
+- [Tedavi](#tedavi)
+- [Ölüm ve diriltme](#ölüm-ve-diriltme)
+- [Animasyonlar ve yara izleri](#animasyonlar-ve-yara-izleri)
+- [SKSE menüsü ve test laboratuvarı](#skse-menüsü-ve-test-laboratuvarı)
+- [Kayıtlar ve ayarlar](#kayıtlar-ve-ayarlar)
+- [Geliştirici derlemesi](#geliştirici-derlemesi)
+- [Lisans](#lisans)
 
-| Requirement | Version |
-|---|---|
-| Skyrim Special / Anniversary Edition | Latest |
-| SKSE64 | 2.2.x+ |
-| Address Library for SKSE | Latest |
-| SKSE Menu Framework | Latest |
+## Gereksinimler
 
----
+- Skyrim Special Edition / Anniversary Edition, desteklenen **1.6.x** sürümü
+- SKSE64
+- Address Library for SKSE Plugins
+- SKSE Menu Framework — Life Again menülerini kullanmak için
+- Open Animation Replacer (OAR) — yaralanma animasyonları için
+- RaceMenu ve **Wounds Overlays For RaceMenu** — görünür yara izi için
 
-## 📦 Installation / Kurulum
+SKSE, Address Library, OAR ve RaceMenu entegrasyonları ayrı bileşenlerdir. OAR veya RaceMenu bileşenleri yoksa ana yaralanma ve tedavi sistemi kullanılabilir; ilgili animasyon/yara izi görünümü çalışmaz. Menü bileşeni yoksa SKSE menüleri kullanılamaz.
 
-1. Download the latest `LifeAgain.dll`.
-2. Place it in your Skyrim installation folder:  
-   `Data\SKSE\Plugins\LifeAgain.dll`
-3. Launch Skyrim through SKSE.
+## Kurulum
 
----
+### Önerilen: bütünleşik MO2 paketi
 
-1. En son `LifeAgain.dll` dosyasını indirin.
-2. Skyrim kurulum klasörünüzün içine koyun:  
-   `Data\SKSE\Plugins\LifeAgain.dll`
-3. Skyrim'i SKSE üzerinden başlatın.
+Depodaki `distribution/Life Again - Integrated` klasörünü tek bir mod olarak MO2'ye ekleyip etkinleştirin. Bu paket ana eklentiyi, OAR köprüsünü ve yaralanma animasyonlarını birlikte içerir. OAR animasyonlarının görünmesi için ayrıca Open Animation Replacer kurulu ve etkin olmalıdır. Görünür yara izi için RaceMenu ile Wounds Overlays For RaceMenu kurulu ve etkin olmalıdır.
 
----
+MO2 dışında kurulumda klasör içeriğini oyunun `Data` klasörüne yerleştirin. DLL'ler şu konumda olmalıdır:
 
-## 🚀 Changelog / Güncellemeler
+```text
+Data/SKSE/Plugins/LifeAgain.dll
+Data/SKSE/Plugins/LifeAgainOARBridge.dll
+```
 
-### Version 1.2
-**EN:**
-- **Visual Head Bandages (Soft Dependency):** Added automatic equipping of head bandages on injured followers if the mod `Usable Skyrim Bandages.esp` is installed. When healed (via potion, temple, or natural recovery), the bandage is automatically removed. If the mod is not present, the game continues normally without issues.
-- **Strict Active Follower Detection:** Refined follower recognition to track only active party members currently traveling with the player. Non-team NPCs, hostile characters, and NPCs outside your active party/cell are no longer mistakenly registered.
-- **Save Game Bandage Persistence:** Automatically re-equips bandages for followers who were already injured when loading an existing save game (`kPostLoadGame`).
+### Ayrı animasyon paketi
 
-**TR:**
-- **Görsel Kafa Bandajı Entegrasyonu (Yumuşak Bağımlılık):** `Usable Skyrim Bandages.esp` modu yüklüyse, yaralanan yoldaşlara otomatik olarak kafa bandajı verilir ve giydirilir. Yoldaş iyileştiğinde (iksir, tapınak veya doğal yolla) bandaj otomatik olarak çıkarılır. Mod yüklü değilse sistem sorunsuz şekilde standart işleyişine devam eder.
-- **Sıkı Aktif Takipçi Filtrelemesi:** Takipçi algılama mekanizması güçlendirildi. Yalnızca oyuncuyla fiilen birlikte gezen aktif yoldaşlar takip edilir. Takımda olmayan yabancı NPC'ler, düşmanlar veya oyuncuyla aynı hücrede bulunmayanlar artık yanlışlıkla kaydedilmez.
-- **Kayıt Dosyası (Save) Bandaj Desteği:** Halihazırda yaralı olan yoldaşların bulunduğu bir kayıt dosyası yüklendiğinde, kafa bandajları otomatik olarak yeniden giydirilir (`kPostLoadGame`).
+`distribution/Life Again Injury Animations` yalnızca OAR animasyon dosyalarını ve koşullarını içeren ayrı pakettir. Bütünleşik paketi kullanıyorsanız bunu ayrıca etkinleştirmeyin; aynı animasyon dosyalarını iki moddan yüklemek çakışma ve gereksiz dosya önceliği sorunları yaratabilir. Ayrı paketi seçerseniz ana Life Again DLL'lerini başka bir mod kurulumundan yükleyin.
 
-### Version 1.1
-**EN:**
-- **Crash Fix:** Fixed critical random crashes on follower death by delegating events to the SKSE task interface instead of executing directly inside the event sink.
-- **Soul Gem Revival System:** You can now revive followers using filled Soul Gems instead of (or alongside) gold. Black, Grand, Greater, Common, Lesser, and Petty soul gems are supported with scaling costs based on their power.
-- **Wandering Priests & New Religions:** Revival and healing services are no longer strictly limited to Temples. You can now talk to wandering priests, Vigilants of Stendarr, monks, and other religious figures out in the wild to perform these services.
-- **Configurable Potion Requirements:** The amount of Cure Disease Potions required to heal followers in the field is now configurable via the MCM for both light and heavy injuries.
-- **MCM Toggles:** New toggles added for Gold vs. Soul Gem revive costs, as well as distinct sections for reviving and healing.
+## Yaralanma sistemi
 
-**TR:**
-- **Çökme Düzeltmesi:** Yoldaş ölümlerinde aniden yaşanan çökmeler (crash) düzeltildi.
-- **Ruh Taşı ile Diriltme:** Artık yoldaşlarınızı sadece altınla değil, dolu Ruh Taşları ile de diriltebilirsiniz. Siyah, Yüce, Büyük, Yaygın, Orta ve Küçük ruh taşları desteklenmektedir (MCM üzerinden açılıp kapatılabilir).
-- **Gezgin Rahipler ve Yeni Dinler:** Diriltme ve iyileştirme işlemleri artık sadece tapınaklarla sınırlı değil. Yollarda gezen Stendarr Muhafızları (Vigilants of Stendarr), keşişler ve diğer din adamları da bu işlemleri yapabilecek.
-- **Ayarlanabilir İksir İhtiyacı:** Yoldaşları sahada iyileştirmek için gereken Tedavi İksiri sayısı hafif ve ağır yaralanmalar için artık MCM üzerinden ayrı ayrı ayarlanabiliyor.
-- **MCM Sekmeleri:** Menüler daha düzenli hale getirildi ve Ruh Taşı/Altın seçenekleri eklendi.
+Yalnızca modun aktif takipçi olarak tanıdığı yoldaşlar yaralanma kontrolüne alınır. Geçerli bir savaş vuruşundan sonra aynı yoldaş için kısa bir bekleme süresi uygulanır; böylece tek bir saldırı dizisinin art arda çok sayıda yara üretmesi önlenir. Her vuruş yaralanma oluşturmaz.
 
----
+Yaralanmalar iki şiddet grubuna ayrılır:
 
-## ✨ Features / Özellikler
+**Hafif yaralar**
 
----
+- Sıyrık / aşınma
+- Kesik
+- Hafif yanık
+- Ezik / morluk
 
-### 🏴 Follower Death System / Yoldaş Ölüm Sistemi
+**Ağır yaralar**
 
-**EN:**  
-When a follower goes down in battle (enters bleedout), they have a chance to truly die instead of just getting back up. This chance varies by their injury status.
+- Derin kesik / açılma
+- Delici yaralanma
+- Parçalı / ezikli yara
+- Ciddi yanık
 
-- **Healthy follower:** 5% chance to die permanently when downed.
-- **Lightly Injured follower:** 15% chance to die permanently when downed.
-- **Heavily Injured follower:** 40% chance to die permanently when downed.
+Varsayılan yaralanma olasılıkları hafif yara için **%5**, ağır yara için **%1**'dir. Önce ağır yara olasılığı kontrol edilir; ağır yara oluşmazsa hafif yara kontrol edilir. Değerler SKSE menüsünden değiştirilebilir ve ağır yara olasılığı hafif yaraya kıyasla sınırlanır. Bunlar her vuruş için olasılıktır; belirli bir savaşta yara oluşacağını garanti etmez.
 
-These values can be adjusted freely from the SKSE in-game menu.  
-Setting a value to 0 means they follow vanilla Skyrim rules (never permanently die).
+Yaralanma şiddetine göre yoldaşın saldırı gücü, hareket hızı, dayanıklılık/magicka yenilenmesi ve zırhı azalır. Yeni yara oluştuğunda yaralı tepki sesi ve uygun animasyon olayı tetiklenebilir. Etkiler tedavi edilince kaldırılır. Animasyon seçimi vücudun tam yara konumuna değil, yaralanmanın şiddetine dayanır.
 
-**TR:**  
-Bir yoldaş savaşta yere düştüğünde (bleedout), gerçekten ölme ihtimali vardır. Bu ihtimal yaralanma durumuna göre değişir.
+## Tedavi
 
-- **Sağlıklı yoldaş:** Yere düştüğünde kalıcı olarak ölme ihtimali %5.
-- **Hafif yaralı yoldaş:** Yere düştüğünde kalıcı olarak ölme ihtimali %15.
-- **Ağır yaralı yoldaş:** Yere düştüğünde kalıcı olarak ölme ihtimali %40.
+### İksirle tedavi
 
-Bu değerler oyun içi SKSE menüsünden serbestçe değiştirilebilir.  
-Değeri 0 yapmak, standart Skyrim kurallarını (kalıcı ölüm yok) uygular.
+Life Again, oyundaki **Hastalık Tedavi İksiri (Cure Disease Potion)** öğesini kullanır. Yaralı yoldaşın envanterinde en az bir iksir varsa bir tane içer ve rastgele seçilen tek bir yara iyileşir. Birden fazla yarası varsa kalan iksirleri de kullanıldıkça yaralar tek tek iyileşir. Healing menüsünden oyuncunun envanterindeki iksirlerle tüm yaraları tek seferde tedavi edebilirsin; bu işlem her hafif yara için **1**, her ağır yara için **3** iksir ister.
 
----
+### Altınla tedavi
 
-### 🩹 Injury System / Yaralanma Sistemi
+Healing menüsünde yaraları altın karşılığında tedavi etme seçeneği bulunur:
 
-**EN:**  
-When a follower is downed in battle and survives, they have a 15% chance (configurable) to become **Lightly Injured**. Injuries come in two levels:
+- Her hafif yara: **100 altın**
+- Her ağır yara: **250 altın**
 
-#### Light Injury (Hafif Yaralanma)
-- Follower receives a **-15% penalty** to attack damage, health/magicka/stamina regeneration, and **-50 armor rating**.
-- The follower's downed animation and a **gender-appropriate groan sound** will play:
-  - Male followers: male groan sound
-  - Female followers: female groan sound
-- A notification appears in the top-left: *"[Name] is lightly injured, you should heal them."*
-- Optionally, a pop-up message box can appear that you must close manually.
-- **Visual Bandage:** If *Usable Skyrim Bandages* is installed, a head bandage is automatically equipped on the follower.
-
-#### Heavy Injury (Ağır Yaralanma)
-- If a **Lightly Injured** follower is downed **3 more times** without being healed, they become **Heavily Injured**.
-- Follower receives a **-50% penalty** to attack damage, health/magicka/stamina regeneration, and **-150 armor rating**.
-- A notification appears: *"[Name] is heavily injured, heal them immediately!"*
-- **Visual Bandage:** Bandage remains visibly equipped until the follower is fully cured.
-
-**TR:**  
-Bir yoldaş savaşta yere düşüp hayatta kaldığında, %15 ihtimalle (ayarlanabilir) **Hafif Yaralı** durumuna girer. Yaralanmaların iki seviyesi vardır:
-
-#### Hafif Yaralanma (Light Injury)
-- Yoldaş, saldırı hasarı, can/büyü/dayanıklılık yenilenmesinde **%15 ceza** alır ve **zırhı 50 puan düşer**.
-- Yoldaş yaralı animasyonu oynar ve **cinsiyetine uygun inleme sesi** çıkarır:
-  - Erkek yoldaşlar: erkek inleme sesi
-  - Kadın yoldaşlar: kadın inleme sesi
-- Sol üstte bildirim çıkar: *"[Ad] hafif yaralandı, tedavi ettirsen iyi olur."*
-- İsteğe bağlı olarak, elle kapatılması gereken bir mesaj kutusu da açılabilir.
-- **Görsel Bandaj:** *Usable Skyrim Bandages* modu yüklüyse yoldaşa otomatik kafa bandajı takılır.
-
-#### Ağır Yaralanma (Heavy Injury)
-- **Hafif Yaralı** bir yoldaş, iyileştirilmeden **3 kez daha** yere düşerse **Ağır Yaralı** olur.
-- Yoldaş, saldırı hasarı, can/büyü/dayanıklılık yenilenmesinde **%50 ceza** alır ve **zırhı 150 puan düşer**.
-- Bildirim çıkar: *"[Ad] ağır yaralandı, acilen tedavi ettir!"*
-- **Görsel Bandaj:** Yoldaş tamamen tedavi edilene kadar kafa bandajı üzerinde kalmaya devam eder.
-
----
+### Elle tedavi
 
-### ⚰️ Death Notifications / Ölüm Bildirimleri
-
-**EN:**  
-When a follower permanently dies:
-- A **notification** appears in the top-left corner: *"[Name] your companion, has died."*
-- Optionally, a **message box** appears that you must close by clicking "OK".
+Otomatik rahip taraması ve takipçinin rahibe yaklaşıp kendi altınını harcayarak tedavi olması kaldırıldı. Tedaviyi SKSE menüsündeki **Healing (Tedavi)** bölümünden başlatabilirsin. İksir satın alımını Life Again yapmaz; bu işi Follower Unbound yürütür. Yeterli iksiri taşıyan takipçi bunları kullanarak yaralarını otomatik iyileştirebilir. Elle altınla tedavi seçeneği menüde kullanılabilir.
 
-Both options can be toggled on/off from the SKSE menu.
+Yara uygulama ve iksir tedavisi adımları `Documents\My Games\Skyrim Special Edition\SKSE\LifeAgain_Treatment.log` dosyasına yazılır. Yara izi/overlay uygulama adımları `LifeAgainOARBridge.log` dosyasına yazılır. Takipçi iksir tedavisinde oyun motorunun `Actor::DrinkPotion` işlevi kullanılır; bu, NPC'nin iksiri kendi envanterinden içmesini ve Skyrim'in standart içme davranışını tetikler. King Core kaydı, tedavi iksirinin Follower Unbound tarafından satılmasını veya envanter temizliğinde silinmesini önler; iksir satın alma işini Life Again yapmaz.
 
-**TR:**  
-Bir yoldaş kalıcı olarak öldüğünde:
-- Sol üstte **bildirim** çıkar: *"[Ad] adındaki yoldaşınız öldü."*
-- İsteğe bağlı olarak, "Tamam" butonuna basarak kapatmanız gereken bir **mesaj kutusu** açılır.
+### Dinlenerek iyileşme
 
-Her iki seçenek de SKSE menüsünden açılıp kapatılabilir.
+Hafif yaralar, oyun takviminde geçen her **3 günde bir rastgele tek bir hafif yara** iyileşecek şekilde doğal toparlanır. Yaralanma menüsü her takipçi için bir sonraki doğal iyileşmeye kalan oyun günü sayısını gösterir. Ağır yaralar kendiliğinden iyileşmez. Dinlenme ve uyku, oyun saatini ilerlettiği ölçüde bu süreye katkı sağlar. Follower Unbound oyuncunun bekleme/uyku bitişini algılar ve takipçilerin dinlendiğini King Core üzerinden Life Again'e bildirir; Life Again iyileşme hesabını bu olayda günceller. İyileşme ilerlemesi kayıt dosyasına yazılır. Bu bağlantı için güncel King Core, Follower Unbound ve Life Again DLL'lerinin birlikte kurulu olması gerekir.
 
----
+Takipçinin kendi kullandığı her tedavi iksiri rastgele **tek bir yarayı** iyileştirir; başka yaralar varsa doğal iyileşme sayacı onlar için devam eder. Son hafif yara iksirle iyileşirse doğal iyileşme sayacı gösterilmez. Healing menüsünden tüm yaralar için gerekli iksirleri kullanarak tam tedavi seçildiğinde yaralanma kaydı ve sayaç tamamen temizlenir.
 
-### ⛪ Temple Revival & Healing / Tapınak Diriltme ve İyileştirme
+## Ölüm ve diriltme
 
-**EN:**  
-Go to any temple in Skyrim and speak to a **priest NPC**. After the dialogue, the **Life Again menu** becomes unlocked with priest access, allowing you to:
+Yoldaşın yere düşüp iyileşmeden ölmesi durumunda kalıcı ölüm ihtimali sağlık/yaralanma seviyesine göre hesaplanır. Varsayılan ihtimaller sağlıklı durumda **%5**, hafif yaralı durumda **%15**, ağır yaralı durumda **%40**'tır. Değerler SKSE menüsünden ayarlanabilir; **%0**, ilgili seviyede kalıcı ölüm ihtimalini kapatır.
 
-#### Revive Dead Followers (Ölüleri Dirilt)
-- Browse all of your dead followers in a list (name, type, level, date of death).
-- Select a follower and pay a **Gold fee** (based on their level × multiplier).
-- Confirm to revive them in the world.
-- **Max Revives Limit (3 Lives):** By default, a follower can only be revived 3 times. If they die a 4th time, their soul cannot be reached and they remain permanently dead. This is configurable in settings.
+Diriltme menüsü rahiple etkileşim üzerinden açılır. Varsayılan altın bedeli yoldaşın seviyesinin **500 katıdır**. Ayarlardan ruh taşı şartı açılabilir; yalnızca dolu ruh taşları sayılır. Altın ve ruh taşı şartları birlikte etkinse ikisi de gerekir. `MaxRevives` varsayılan olarak 3'tür; 0 sınırsız diriltme anlamına gelir. Diriltilen yoldaş oyuncunun yakınına getirilir ve eski yara kayıtları temizlenir.
 
-#### Heal Injured Followers (Yaralıları İyileştir)
-- Browse all injured followers (Light or Heavy status shown).
-- Select a follower and pay a **Gold fee**:
-  - **Light injury:** cheaper cost (level × Light multiplier)
-  - **Heavy injury:** more expensive cost (level × Heavy multiplier)
-- Confirm to remove all debuffs and restore them to full health.
+## Animasyonlar ve yara izleri
 
-**TR:**  
-Skyrim'deki herhangi bir tapınağa gidin ve bir **rahip NPC** ile konuşun. Diyalogdan sonra **Life Again menüsü** rahip erişimiyle açılır ve şunları yapabilirsiniz:
+`LifeAgainOARBridge.dll`, ana DLL'in sunduğu yaralanma durumunu OAR koşullarına aktarır. Animasyon paketi hafif ve ağır yaralanma için uygun bekleme/hareket animasyonlarını seçer. Yaralı animasyonların diğer animasyon setleri tarafından bastırılmaması için önceliği yüksektir. Bu animasyonlar yara türünü veya vücuttaki kesin yara yerini göstermez; şiddet seviyesine göre uygulanır.
 
-#### Ölüleri Dirilt (Revive Dead Followers)
-- Tüm ölü yoldaşlarınızı bir listede görüntüleyin (isim, tür, seviye, ölüm tarihi).
-- Bir yoldaş seçin ve **Altın bedeli** ödeyin (seviye × çarpan).
-- Onaylayın ve yoldaş dünyaya geri dönsün.
-- **Max Diriltme Sınırı (3 Can):** Varsayılan olarak bir yoldaş sadece 3 kez diriltilebilir. 4. kez ölürse, ruhuna erişilemez ve kalıcı olarak ölü kalır. Bu durum ayarlardan değiştirilebilir.
+Bridge, yaralanma sürdüğü müddetçe RaceMenu yara overlay'ini görünür kılar. Bunun yoldaşlara uygulanabilmesi için RaceMenu `skee64.ini` dosyasındaki `[Overlays]` bölümünde `bPlayerOnly=0` olmalıdır. Tüm yaralar tedavi edildiğinde, ölüm temizliği yapıldığında veya yoldaş diriltildiğinde overlay kaldırılır. Yara izi için RaceMenu ve Wounds Overlays For RaceMenu'nün içerik dosyaları gerekir; Life Again bu dokuların yerine geçmez.
 
-#### Yaralıları İyileştir (Heal Injured Followers)
-- Tüm yaralı yoldaşları (Hafif veya Ağır durumu gösterir) listede görüntüleyin.
-- Bir yoldaş seçin ve **Altın bedeli** ödeyin:
-  - **Hafif yaralanma:** daha ucuz (seviye × Hafif çarpanı)
-  - **Ağır yaralanma:** daha pahalı (seviye × Ağır çarpanı)
-- Onaylayın; debuff'lar kalkar ve yoldaşınız tam sağlığına kavuşur.
+Animasyon paketinde kullanılan bazı HKX dosyaları yerel Wounds animasyon kurulumundan alınmıştır. Bu kaynak dosyaları özgün yazarın izni olmadan yeniden dağıtmayın. Bütünleşik paketteki DLL ve animasyon dosyaları, aynı adlı ayrı animasyon paketini tekrar kurmanızı gerektirmez.
 
----
+## SKSE menüsü ve test laboratuvarı
 
-### ⏳ Natural Recovery / Doğal İyileşme
+SKSE menüsünde **Settings**, **Healing**, **Revival**, **Dashboard** ve **Injury Test Lab** bölümleri bulunur. Settings bölümünden yaralanma ve kalıcı ölüm olasılıkları gibi değerleri değiştirebilirsiniz.
 
-**EN:**  
-Lightly injured followers can recover on their own over time without visiting a temple.
-- If a **Lightly Injured** follower is **not downed again for 3 in-game days**, they automatically recover.
-- This condition is checked instantly whenever you wait, sleep, or fast travel.
-- A notification appears: *"[Name] has recovered naturally. ([Name] sağlığına kavuştu.)"*
-- **Heavily Injured followers cannot recover naturally** — a temple visit is required.
+Injury Test Lab, oyun içinde yakındaki aktif insansı yoldaşlarda sistemi denemek için kullanılır. Aynı hücrede, oyuncunun 2500 birim yakınındaki canlı ve aktif takipçiler listelenir; hayvan yoldaşlar ve diğer NPC'ler bu sisteme dahil değildir. Yoldaş seçip sekiz yara türünden birini uygulayabilir; envanterine tedavi iksiri veya altın ekleyebilir; taşıdığı kaynaklarla tedaviyi sınayabilir ya da test yarasını temizleyebilirsiniz. Test yoldaşına uygulanan durum kayıt dosyasına yazılabilir; deneme bitince laboratuvardaki temizleme seçeneğini kullanın.
 
-**TR:**  
-Hafif yaralı yoldaşlar tapınağa gitmeye gerek kalmadan zamanla kendiliğinden iyileşebilir.
-- **Hafif Yaralı** bir yoldaş **3 oyun günü boyunca yere düşmezse** otomatik olarak iyileşir.
-- Bu koşul, beklediğinizde, uyuduğunuzda veya hızlı seyahat ettiğinizde anında kontrol edilir.
-- Bildirim gelir: *"[Ad] has recovered naturally. ([Ad] sağlığına kavuştu.)"*
-- **Ağır yaralı yoldaşlar doğal olarak iyileşemez** — tapınak ziyareti zorunludur.
+## Kayıtlar ve ayarlar
 
----
+Ölü yoldaşlar, yaralanma sayıları ve diriltme kayıtları SKSE co-save dosyasında saklanır ve ilgili Skyrim kaydıyla birlikte taşınır. Ayarlar şu dosyada tutulur:
 
-### 💨 Injury Speed Penalty / Yaralanma Hız Cezası
+```text
+Documents/My Games/Skyrim Special Edition/LifeAgain/settings.json
+```
 
-**EN:**  
-Injured followers move slower depending on their injury level:
-- **Light Injury:** `-20%` movement speed penalty.
-- **Heavy Injury:** `-50%` movement speed penalty (effectively walk-only).
+Önceki sürümlerde kaydedilmiş yaralı yoldaş kayıtları yeni yara sayısı biçimine yükseltilir. Eski kayıtta yara türü bilgisi bulunmuyorsa, kayıtlı şiddete uygun varsayılan bir yara türü oluşturulur. Ayar dosyanızı değiştirmeden önce yedeklemek iyi olur.
 
-The penalty is automatically removed when the follower is healed.
+## Geliştirici derlemesi
 
-**TR:**  
-Yaralı yoldaşlar, yaralanma seviyelerine göre daha yavaş hareket eder:
-- **Hafif Yaralanma:** `-%20` hareket hızı cezası.
-- **Ağır Yaralanma:** `-%50` hareket hızı cezası (yürüyerek gider).
+Proje CMake ve C++23 kullanır. Derleme ortamında Skyrim/SKSE CommonLibSSE-NG bağımlılıkları, CMake, Visual Studio C++ araçları ve `VCPKG_ROOT` tanımlı olmalıdır. King Core başlıkları varsayılan olarak `../King Core/include` konumunda aranır; farklıysa `KING_CORE_INCLUDE_DIR` ayarlayın.
 
-Yoldaş iyileştiğinde ceza otomatik olarak kalkar.
+```powershell
+cmake --preset release
+cmake --build build --config Release
+```
 
----
+İsteğe bağlı OAR köprüsünü derlemek için CMake yapılandırmasında `-DBUILD_LIFEAGAIN_OAR_BRIDGE=ON` kullanın. Hazır MO2 paketi `distribution/Life Again - Integrated` altında bulunur.
 
-### 💊 Field Healing with Potions / Sahada İksirle İyileştirme
+## Lisans
 
-**EN:**  
-You can heal injured followers directly in the field by placing **Cure Disease Potions** in their inventory — no temple visit needed:
-- **Light Injury:** 1 Cure Disease Potion is consumed automatically.
-- **Heavy Injury:** 3 Cure Disease Potions are required.
-
-The mod checks follower inventories instantly via game events when an item is transferred. Once the required number of potions is detected, they are consumed and the injury is removed with a notification.
-
-**TR:**  
-Yaralı yoldaşların **envanterine Hastalık İksiri (Cure Disease Potion)** koyarak sahada iyileştirebilirsiniz — tapınağa gitmeye gerek yok:
-- **Hafif Yaralanma:** 1 iksir otomatik harcanır.
-- **Ağır Yaralanma:** 3 iksir gereklidir.
-
-Mod, oyun içi eventler vasıtasıyla eşya transferi anında yoldaş envanterlerini anında kontrol eder. Gerekli sayıda iksir bulununca hemen harcanır ve yaralanma bildirimle kaldırılır.
-
----
-
-### 📊 Follower Dashboard / Yoldaş Durum Paneli
-
-**EN:**  
-A dedicated **Dashboard** tab is available in the SKSE menu under **Life Again → Dashboard (Pano)**. It shows a real-time overview of all your followers:
-
-- **Summary bar** at the top: count of Light Injured, Heavy Injured, and Dead followers.
-- **Injured Followers Table:** Name, Type, Level, Status (color-coded), Bleedout count, and natural heal countdown.
-- **Dead Followers Table:** Name, Type, Level, and date of death.
-- Auto-refreshes every ~1 second. Manual **Refresh** button also available.
-
-**TR:**  
-SKSE menüsünde **Life Again → Dashboard (Pano)** sekmesinde tüm yoldaşlarınızın gerçek zamanlı durumunu gösteren özel bir panel bulunur:
-
-- **Üstte özet çubuk:** Hafif Yaralı, Ağır Yaralı ve Ölmüş yoldaş sayıları.
-- **Yaralı Yoldaşlar Tablosu:** İsim, Tür, Seviye, Durum (renkli), Bleedout sayısı ve doğal iyileşme geri sayımı.
-- **Ölmüş Yoldaşlar Tablosu:** İsim, Tür, Seviye ve ölüm tarihi.
-- ~1 saniyede bir otomatik güncellenir. Manuel **Yenile** butonu da mevcuttur.
-
----
-
-## ⚙️ SKSE Menu / SKSE Menüsü
-
-Open the SKSE menu in-game. There are two tabs under **Life Again**:  
-Oyun içi SKSE menüsünü açın. **Life Again** altında iki sekme bulunur:
-
-- **General (Genel):** All settings and temple actions.
-- **Dashboard (Pano):** Real-time follower status overview.
-
-### General Tab Settings / Genel Sekme Ayarları
-
-| Setting | Description | Açıklama | Default |
-|---|---|---|---|
-| Gold Multiplier | Gold cost per level for revival | Diriltme için seviye başına altın | 500 |
-| Light Injury Cost Multiplier | Cost per level for light injury healing | Hafif yara tedavi çarpanı | 100 |
-| Heavy Injury Cost Multiplier | Cost per level for heavy injury healing | Ağır yara tedavi çarpanı | 300 |
-| Healthy Death Chance % | Death chance when healthy | Sağlıklı yoldaşın ölme ihtimali | 5 |
-| Light Injury Death Chance % | Death chance when lightly injured | Hafif yaralının ölme ihtimali | 15 |
-| Heavy Injury Death Chance % | Death chance when heavily injured | Ağır yaralının ölme ihtimali | 40 |
-| Show Death Notification | Show top-left message on death | Ölüm bildirimi göster | ON |
-| Show Death Message Box | Show pop-up box on death | Ölüm mesaj kutusu göster | OFF |
-| Injury Chance % | Chance to get injured after being downed | Yere düşünce yaralanma ihtimali | 15 |
-| Show Injury Notification | Show top-left message on injury | Yaralanma bildirimi göster | ON |
-| Show Injury Message Box | Show pop-up box on injury | Yaralanma mesaj kutusu göster | OFF |
-| Max Revives | Maximum times a follower can be revived (0 = Unlimited) | Maksimum diriltme sayısı (0 = Sınırsız) | 3 |
-
----
-
-## 🔧 Compatibility / Uyumluluk
-
-**EN:**  
-This mod is designed to work alongside popular follower frameworks such as **NFF (Nether's Follower Framework)**. The bleedout/death detection uses `KillImmediate` to bypass framework interference, ensuring followers actually die when the conditions are met.
-
-**TR:**  
-Bu mod, **NFF (Nether's Follower Framework)** gibi popüler yoldaş sistemleriyle birlikte çalışacak şekilde tasarlanmıştır. Bleedout/ölüm tespiti, framework müdahalesini atlatmak için `KillImmediate` kullanır ve koşullar sağlandığında yoldaşların gerçekten öldüğünü garanti eder.
-
----
-
-## 📁 Files & Data / Dosyalar ve Veriler
-
-**EN:**  
-The mod stores follower death and injury data persistently in:  
-`%APPDATA%\Skyrim Special Edition\SKSE\LifeAgain\followers.json`
-
-This file is automatically created and updated. Dead followers and their injury states survive game restarts.
-
-**TR:**  
-Mod, ölü ve yaralı yoldaş verilerini kalıcı olarak şu yerde saklar:  
-`%APPDATA%\Skyrim Special Edition\SKSE\LifeAgain\followers.json`
-
-Bu dosya otomatik oluşturulur ve güncellenir. Ölü yoldaşlar ve yaralanma durumları oyun yeniden başlatılsa bile korunur.
-
----
-
-## 📜 License / Lisans
-
-Copyright (c) 2026 Arif KULPU. All Rights Reserved. — Tüm Hakları Saklıdır.  
-See [LICENSE](LICENSE.md) for details.
-
----
-
-## 👤 Author / Yazar
-
-**Arif KULPU**
-
----
+Life Again için telif ve kullanım koşulları [LICENSE.md](LICENSE.md) dosyasındadır. Üçüncü taraf animasyon ve overlay içerikleri kendi yazarlarının lisanslarına tabidir.
