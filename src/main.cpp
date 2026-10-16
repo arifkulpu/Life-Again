@@ -166,8 +166,14 @@ void OnSKSEMessage(SKSE::MessagingInterface::Message* msg) {
                     (event->type != KingCore::RestEventType::Wait && event->type != KingCore::RestEventType::Sleep)) break;
 
                 const auto eventDay = event->gameDaysPassed;
+                if (auto trace = spdlog::get("LifeAgainTreatment")) {
+                    trace->info("Received rest event from King Core: type={}, gameDay={:.2f}.",
+                        static_cast<std::uint32_t>(event->type), eventDay);
+                }
                 if (auto* taskInterface = SKSE::GetTaskInterface()) {
                     taskInterface->AddTask([eventDay]() { ProcessNaturalLightWoundHealing(eventDay); });
+                } else if (auto trace = spdlog::get("LifeAgainTreatment")) {
+                    trace->error("Could not process rest event: SKSE task interface unavailable.");
                 }
             }
             break;
@@ -208,6 +214,7 @@ void OnSKSEMessage(SKSE::MessagingInterface::Message* msg) {
             spdlog::info("LifeAgain: kPostLoadGame - Yaralanma durumlari yenileniyor...");
             if (auto* taskInterface = SKSE::GetTaskInterface()) {
                 taskInterface->AddTask([]() {
+                    InitializeNaturalHealingTimers();
                     PublishFollowerInjurySnapshot();
                     RefreshInjuryBridgeOnLoad();
                 });

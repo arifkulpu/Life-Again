@@ -946,16 +946,17 @@ namespace LifeAgain {
             Spacing();
 
             // Tablo
-            if (BeginTable("InjuredTable", 6, 0)) {
-                // Manuel baslik satiri
-                TableNextRow();
-                TableSetColumnIndex(0); Text("Name (Ad)");
-                TableSetColumnIndex(1); Text("Type (Tur)");
-                TableSetColumnIndex(2); Text("Lvl");
-                TableSetColumnIndex(3); Text("Status (Durum)");
-                TableSetColumnIndex(4); Text("Wounds (Yaralar)");
-                TableSetColumnIndex(5); Text("Potions (Iksir)");
-                Separator();
+            constexpr int dashboardTableFlags =
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+            if (BeginTable("InjuredTable", 7, dashboardTableFlags)) {
+                TableSetupColumn("Name (Ad)", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+                TableSetupColumn("Type (Tur)", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+                TableSetupColumn("Lvl", ImGuiTableColumnFlags_WidthFixed, 48.0f);
+                TableSetupColumn("Status (Durum)", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+                TableSetupColumn("Wounds (Yaralar)", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+                TableSetupColumn("Potions (Iksir)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                TableSetupColumn("Next heal (Sonraki iyilesme)", ImGuiTableColumnFlags_WidthFixed, 205.0f);
+                TableHeadersRow();
 
                 for (auto& inf : state.injuredList) {
                     TableNextRow();
@@ -982,10 +983,12 @@ namespace LifeAgain {
 
                     TableSetColumnIndex(4);
                     TextWrapped("%s", DescribeWounds(inf).c_str());
-                    TextWrapped("%s", NaturalHealingStatus(inf).c_str());
 
                     TableSetColumnIndex(5);
                     Text("%d", GetInjuryPotionCost(inf.injuryCounts));
+
+                    TableSetColumnIndex(6);
+                    TextWrapped("%s", NaturalHealingStatus(inf).c_str());
                 }
                 EndTable();
             }

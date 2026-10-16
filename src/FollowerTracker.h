@@ -556,6 +556,24 @@ namespace LifeAgain {
         PublishFollowerInjurySnapshot();
     }
 
+    inline void InitializeNaturalHealingTimers() {
+        auto* calendar = RE::Calendar::GetSingleton();
+        if (!calendar) return;
+        const float currentGameDay = calendar->GetDaysPassed();
+        auto& tracker = FollowerTracker::GetSingleton();
+        for (const auto& record : tracker.GetInjuredFollowers()) {
+            if (record.recoveryLastGameDay >= 0.0f) continue;
+            tracker.UpdateInjured(record.formID, [currentGameDay](InjuredFollower& current) {
+                current.recoveryLastGameDay = currentGameDay;
+                current.recoveryProgressDays = 0.0f;
+            });
+            if (auto trace = spdlog::get("LifeAgainTreatment")) {
+                trace->info("Initialized natural recovery timer for legacy injury record: follower={:08X}, gameDay={:.2f}.",
+                    record.formID, currentGameDay);
+            }
+        }
+    }
+
     inline void ProcessNaturalLightWoundHealing(float a_eventGameDay = -1.0f)
     {
         constexpr float recoveryDaysPerLightWound = 3.0f;
