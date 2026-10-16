@@ -982,6 +982,7 @@ namespace LifeAgain {
 
                     TableSetColumnIndex(4);
                     TextWrapped("%s", DescribeWounds(inf).c_str());
+                    TextWrapped("%s", NaturalHealingStatus(inf).c_str());
 
                     TableSetColumnIndex(5);
                     Text("%d", GetInjuryPotionCost(inf.injuryCounts));
